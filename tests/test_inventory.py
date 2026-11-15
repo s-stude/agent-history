@@ -1,5 +1,8 @@
 import compression.zstd as zstd
+import os
 from pathlib import Path
+
+from tests.conftest import REPO
 
 from agent_history.cli import main
 from agent_history.inventory import build_inventory, open_source, record_id, row_key
@@ -112,3 +115,65 @@ def test_open_source_streams_plain_and_zst_identically(roots):
         with open_source(src) as fh:
             contents.add(fh.read())
     assert contents == {(LINE * 3).encode()}
+
+
+def test_unknown_transcript_like_files_are_unsupported(roots):
+    write(roots.codex_sessions / f"rollout-2026-09-08T16-38-30-{THREAD}.bin")
+    write(roots.claude_projects / "-p" / f"{PARENT}.jsonl.zst")
+    write(roots.claude_projects / "-p" / PARENT / "subagents" / "agent-a1.jsonl.zst")
+    write(roots.claude_projects / "-p" / "sessions-index.json", "{}")
+    write(roots.claude_projects / "-p" / PARENT / "tool-results" / "out.txt")
+    write(roots.claude_projects / "-p" / PARENT / "subagents" / "agent-a1.meta.json", "{}")
+    inv = build_inventory(roots)
+    assert inv.sources == []
+    assert sorted(p.name for p in inv.unsupported) == sorted([
+        f"rollout-2026-09-08T16-38-30-{THREAD}.bin", f"{PARENT}.jsonl.zst", "agent-a1.jsonl.zst"])
+
+
+def test_root_that_is_a_file_is_unreadable_and_missing_root_is_fine(roots, tmp_path):
+    import shutil
+    shutil.rmtree(roots.codex_archived)
+    roots.codex_sessions.rmdir()
+    roots.codex_sessions.write_text("not a dir")
+    claude_tree(roots.claude_projects)
+    inv = build_inventory(roots)
+    assert inv.unreadable == [roots.codex_sessions]
+    assert len(inv.sources) == 4
+
+
+def test_denied_subtree_is_reported_and_scan_continues(roots, monkeypatch):
+    claude_tree(roots.claude_projects)
+    real_walk = os.walk
+    denied = roots.claude_projects / "-denied"
+
+    def walk(top, onerror=None, **kw):
+        onerror(PermissionError(13, "Permission denied", str(denied)))
+        yield from real_walk(top, onerror=onerror, **kw)
+
+    monkeypatch.setattr(os, "walk", walk)
+    inv = build_inventory(roots)
+    assert denied in inv.unreadable
+    assert len(inv.sources) == 4
+
+
+def test_stat_failure_or_vanished_file_is_isolated(roots, monkeypatch):
+    claude_tree(roots.claude_projects)
+    bad = write(roots.codex_sessions / f"rollout-2026-09-08T16-38-30-{THREAD}.jsonl", LINE)
+    gone = write(roots.codex_archived / f"rollout-2026-09-08T19-31-27-{THREAD}_{PAGE}.jsonl", LINE)
+    real_stat = Path.stat
+
+    def fake_stat(self, *a, **kw):
+        if self == bad:
+            raise PermissionError(13, "Permission denied", str(self))
+        if self == gone:
+            raise FileNotFoundError(2, "No such file", str(self))
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    inv = build_inventory(roots)
+    assert sorted(inv.unreadable) == sorted([bad, gone])
+    assert len(inv.sources) == 4
+
+
+def test_pytest_tmp_is_inside_repo(tmp_path):
+    assert tmp_path.is_relative_to(REPO / "tmp")

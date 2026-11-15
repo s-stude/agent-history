@@ -8,3 +8,4 @@ __pycache__/
 .peer-chats/
 tests/private/
 .idea/
+.pytest_cache/

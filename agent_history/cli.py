@@ -30,6 +30,7 @@ def print_inventory() -> int:
     print(f"empty\t{len(inv.empty)}")
     print(f"skipped\t{len(inv.skipped)}")
     print(f"unsupported\t{len(inv.unsupported)}")
+    print(f"unreadable\t{len(inv.unreadable)}")
     return 0
 
 

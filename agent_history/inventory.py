@@ -1,6 +1,7 @@
 import compression.zstd as zstd
 import os
 import re
+import stat
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +54,7 @@ class Inventory:
     unsupported: list[Path] = field(default_factory=list)
     empty: list[Path] = field(default_factory=list)
     skipped: list[Path] = field(default_factory=list)
+    unreadable: list[Path] = field(default_factory=list)
 
     def sessions(self) -> set[str]:
         return {s.session_key for s in self.sources}
@@ -129,12 +131,37 @@ def classify_codex(path: Path, archived: bool) -> Source | None:
     )
 
 
-def _walk(root: Path):
-    if not root.is_dir():
+def _walk(root: Path, report_error):
+    try:
+        mode = root.stat().st_mode
+    except FileNotFoundError:
         return
-    for dirpath, _dirs, files in os.walk(root):
+    except OSError:
+        report_error(root)
+        return
+    if not stat.S_ISDIR(mode):
+        report_error(root)
+        return
+
+    def onerror(exc: OSError):
+        report_error(Path(exc.filename) if exc.filename else root)
+
+    for dirpath, _dirs, files in os.walk(root, onerror=onerror):
         for name in files:
             yield Path(dirpath) / name
+
+
+CLAUDE_METADATA = re.compile(r"^(?:sessions-index\.json|agent-[0-9a-zA-Z_-]+\.meta\.json)$")
+
+
+def is_claude_candidate(name: str) -> bool:
+    if CLAUDE_METADATA.match(name):
+        return False
+    return ".jsonl" in name or re.match(rf"^{UUID}(?:\.|$)", name) is not None or name.startswith("agent-")
+
+
+def is_codex_candidate(name: str) -> bool:
+    return ".jsonl" in name or name.startswith("rollout-")
 
 
 def build_inventory(roots: Roots) -> Inventory:
@@ -143,21 +170,27 @@ def build_inventory(roots: Roots) -> Inventory:
     def add(path: Path, source: Source | None):
         if source is None:
             inv.unsupported.append(path)
-        elif path.stat().st_size == 0:
+            return
+        try:
+            size = path.stat().st_size
+        except OSError:
+            inv.unreadable.append(path)
+            return
+        if size == 0:
             inv.empty.append(path)
         else:
             inv.sources.append(source)
 
-    for path in _walk(roots.claude_projects):
-        if path.suffix != ".jsonl":
+    for path in _walk(roots.claude_projects, inv.unreadable.append):
+        if not is_claude_candidate(path.name):
             continue
         if path.name == "journal.jsonl" and "workflows" in path.parts:
             inv.skipped.append(path)
         else:
             add(path, classify_claude(path, roots.claude_projects))
     for root, archived in ((roots.codex_sessions, False), (roots.codex_archived, True)):
-        for path in _walk(root):
-            if ".jsonl" in path.name:
+        for path in _walk(root, inv.unreadable.append):
+            if is_codex_candidate(path.name):
                 add(path, classify_codex(path, archived))
     inv.sources.sort(key=lambda s: (s.tool, str(s.path)))
     return inv

@@ -33,7 +33,7 @@ function fts(db, query) {
 test('init twice is idempotent and leaves the schema current', async (t) => {
   const h = await useTestDb(t, { migrate: false });
   if (!h) return;
-  assert.equal((await migrateWithLock(h.url)).length, 2);
+  assert.equal((await migrateWithLock(h.url)).length, 3);
   assert.equal((await migrateWithLock(h.url)).length, 0);
   assert.equal((await schemaStatus(h.db)).state, 'current');
 });
@@ -42,7 +42,7 @@ test('two simultaneous first-time inits on a pristine DB both succeed', async (t
   const h = await useTestDb(t, { migrate: false });
   if (!h) return;
   const results = await Promise.all([migrateWithLock(h.url), migrateWithLock(h.url)]);
-  assert.equal(results.flat().length, 2);
+  assert.equal(results.flat().length, 3);
   const { rows } = await h.db.raw('SELECT count(*)::int AS n FROM knex_migrations_lock');
   assert.equal(rows[0].n, 1);
   assert.equal((await schemaStatus(h.db)).state, 'current');
@@ -53,9 +53,9 @@ test('init via CLI from an unrelated cwd, then doctor says current', async (t) =
   if (!h) return;
   const env = { ...process.env, AGENT_HISTORY_DATABASE_URL: h.url };
   const init = await run(process.execPath, [BIN, 'init'], { env, cwd: '/' });
-  assert.match(init.stdout, /migrations applied: 2/);
+  assert.match(init.stdout, /migrations applied: 3/);
   const doctor = await run(process.execPath, [BIN, 'doctor'], { env, cwd: '/' });
-  assert.match(doctor.stdout, /^schema\tcurrent \(2 applied, 0 pending, 0 unknown\)$/m);
+  assert.match(doctor.stdout, /^schema\tcurrent \(3 applied, 0 pending, 0 unknown\)$/m);
 });
 
 test('a DB with an unknown migration is refused as newer', async (t) => {

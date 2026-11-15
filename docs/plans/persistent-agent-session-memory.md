@@ -84,14 +84,17 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [x] Re-run the real-data false-positive check (50 random sessions, label counts only; `scripts/redaction-sample.js`) and compare with the Python result: 4 `env` redactions, 0 key-pattern hits. First Node run: 87 and 15 `env` hits. A shape-only breakdown over all data (variable name side and value class, no values printed) showed most were references (`KEY: config.x`, `${VAR}`, `process.env.X`, `<placeholder>`). After Codex msg-017 the exemption is narrow: only complete, unquoted reference syntax (`$VAR`, `${VAR}`, `process.env.X`, `process.env['X']`, `import.meta.env.X`, `os.environ['X']`, `os.environ.get('X')`, `os.getenv('X')`), `<placeholder>` / `{{ … }}` values, and numeric values of token-count names (`MAX_TOKENS: 4096`) are kept; everything else after a credential name is redacted, including dotted identifiers like `config.auth.secret,` (after msg-019: punctuation does not prove code), quoted literals, numeric secrets and 1–3 character values. Object/array nesting beyond 64 levels becomes `[REDACTED:depth]`. Re-run: 3 × 50 sessions gave 48 / 19 / 3 `env` hits. Key-pattern hits appeared in these samples (and not in earlier ones by chance); across all data most are this project's fixture or fake-looking tokens, ~76 look like real keys pasted into past sessions, which is what the sanitizer is for
 
 ### Task 6: Claude Code parser
-- [ ] Prompts: `user` lines with human text only; tool-result blocks inside `user` lines become `kind=tool_result`, not prompts
-- [ ] Assistant text answers, tool names, file paths from tool inputs; tool results trimmed to 500 chars after sanitizing
-- [ ] Skip noise types (`attachment`, `mode`, `permission-mode`, `session-owner`, `bridge-session`, `atis-latch`, …); count unknown types and subtypes
-- [ ] Children: use identity from Task 3, set `parent_id`, `agent_id`, `is_sidechain`
-- [ ] Derive `project` from `cwd`; `started_at` / `ended_at` from timestamps
-- [ ] `raw`: sanitized line truncated to 2 KB, with source path and line number
-- [ ] Add anonymised fixtures and golden tests: prompt vs tool-result wrapper counts, parent + 2 children, unknown type counted
-- [ ] Verify parser tests pass
+- [x] Prompts: `user` lines with human text only; tool-result blocks inside `user` lines become `kind=tool_result`, not prompts
+- [x] Assistant text answers, tool names, file paths from tool inputs; tool results trimmed to 500 chars after sanitizing
+- [x] Skip noise types (`attachment`, `mode`, `permission-mode`, `session-owner`, `bridge-session`, `atis-latch`, …); count unknown types and subtypes
+- [x] Children: use identity from Task 3, set `parent_id`, `agent_id`, `is_sidechain`
+- [x] Derive `project` from `cwd`; `started_at` / `ended_at` from timestamps
+- [x] `raw`: sanitized line truncated to 2 KB plus a short `…[+N chars]` marker, stored once per line (first block), with source path and line number
+- [x] Add anonymised fixtures and golden tests: prompt vs tool-result wrapper counts, parent + 2 children, unknown type counted
+- [x] Tool inputs and tool results are sanitized structurally (`sanitize`) before serializing and trimming; redacting the serialized JSON missed env assignments not at line start
+- [x] Migration `003_call_id`: `messages.call_id` (tool_use id / tool_result `tool_use_id`) + index, so ingest can recover a tool name after resuming mid-file
+- [x] Real data (1056 Claude files, 601,188 lines): 154,245 rows in 80 s at 180 MB RSS; every tool result resolved its tool name; 0 unknown types after adding `frame-link`, `artifact-comment-monitor`, `artifact-autoreact-ledger` to noise
+- [x] Verify parser tests pass
 
 ### Task 7: Codex parser
 - [ ] Read `session_meta` for id, `cwd`, `cli_version`, `source`, parent/fork info

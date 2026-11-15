@@ -62,13 +62,14 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 - [x] Verify whether the system `sqlite3` CLI can run an FTS5 `MATCH` on the DB; record the result for the Task 13 pointer — works: `/usr/bin/sqlite3` 3.43.2 runs `MATCH` and `snippet()` on the DB
 
 ### Task 5: Sanitizer
-- [ ] Redact patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines
-- [ ] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
-- [ ] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
-- [ ] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
-- [ ] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
-- [ ] Add false-positive tests: git hashes, UUIDs, file paths, base64 images are left intact
-- [ ] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
+- [x] Redact patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines
+- [x] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
+- [x] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
+- [x] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
+- [x] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
+- [x] Add false-positive tests: git hashes, UUIDs, file paths, base64 images are left intact
+- [x] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
+- [x] Real-data false-positive check (50 random sessions, 22,392 lines, label counts only): first run flagged 9 `sk-` matches inside long base64url blobs; key patterns now must not start or end inside a longer token and are length-capped. Second run: 4 `env` redactions, 0 key-pattern hits. Known limit: a key glued directly to letters or digits on both sides is not detected
 
 ### Task 6: Claude Code parser
 - [ ] Prompts: `user` lines with human text only; tool-result blocks inside `user` lines become `kind=tool_result`, not prompts

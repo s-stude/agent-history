@@ -187,32 +187,34 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] Verify timed queries (`EXPLAIN ANALYZE`) by date range, project, file path and keyword each return in < 1 s on the Task 9 trial DB, using the indexes from Task 4; then drop the trial DB and confirm it is gone
 
 ### Task 14: Retrospective skill
-- [ ] Write a skill that pulls a project's sessions for a date range through the reader role and summarises decisions, reversals and open threads, each with date, session id and a short quote
+- [x] (`skills/retrospective/SKILL.md`) Write a skill that pulls a project's sessions for a date range through the reader role and summarises decisions, reversals and open threads, each with date, session id and a short quote
 - [ ] **(user)** Run it on a busy project over 30 days in one request
 - [ ] **(user)** Verify by hand that each listed decision and reversal is supported by the quoted content in the cited session, and that later reversals supersede earlier decisions
 
 ### Task 15: Backups, maintenance and retention
-- [ ] `agent-history backup`: `"$PGBIN/pg_dump" -Fc --dbname=<resolved URL>` to a temp file in `~/.agent-history/backups/`, renamed to `<date>.dump` (0600) on success; only then rotate to the last 8; credentials never logged
-- [ ] `agent-history restore <dump>`: create an empty DB from `template0`, require roles to exist (provisioned by `setup database --roles-only`), `pg_restore --exit-on-error --single-transaction`, then `knex.migrate.latest()` applies only migrations newer than the dump, run `doctor`
-- [ ] On the fresh restore destination only: if `knex_migrations_lock.is_locked = 1`, report it and call `knex.migrate.forceFreeMigrationsLock()` before `latest()`; never unlock a live DB automatically
-- [ ] Test on test DBs: dump, restore by that exact sequence into another `agent_history_test_*` DB (also from a dump with a stale lock row), row counts and a full-text query match, no duplicate `knex_migrations` rows; no seeded secret appears in the restored rows or in `pg_restore -f -` SQL output
+- [x] `agent-history backup`: `"$PGBIN/pg_dump" -Fc --dbname=<resolved URL>` to a temp file in `~/.agent-history/backups/`, renamed to `<date>.dump` (0600) on success; only then rotate to the last 8; credentials never logged
+- [x] `agent-history restore <dump>`: create an empty DB from `template0`, require roles to exist (provisioned by `setup database --roles-only`), `pg_restore --exit-on-error --single-transaction`, then `knex.migrate.latest()` applies only migrations newer than the dump, run `doctor`
+- [x] On the fresh restore destination only: if `knex_migrations_lock.is_locked = 1`, report it and call `knex.migrate.forceFreeMigrationsLock()` before `latest()`; never unlock a live DB automatically
+- [x] Test on test DBs: dump, restore by that exact sequence into another `agent_history_test_*` DB (also from a dump with a stale lock row), row counts and a full-text query match, no duplicate `knex_migrations` rows; no seeded secret appears in the restored rows or in `pg_restore -f -` SQL output
 - [ ] **(user)** Allow Postgres.app's `pg_dump` and `psql` in the permission dialog once, interactively
 - [ ] **(user)** Add a weekly launchd job running `backup`
-- [ ] Test that search still works after deleting an ingested disposable fixture source
+- [x] Test that search still works after deleting an ingested disposable fixture source
 - [ ] **(user)** Exercise Claude Code's real cleanup in an isolated `CLAUDE_CONFIG_DIR` on an aged transcript and record the result
-- [ ] Document the Postgres.app major-upgrade path in the runbook: `backup` on the old server, start the new one, `setup database --roles-only`, `restore`, `doctor`
+- [x] (`src/backup.js`; restore refuses an existing target database and checks the dump's TOC for grants to the reader role before creating it) Document the Postgres.app major-upgrade path in the runbook: `backup` on the old server, start the new one, `setup database --roles-only`, `restore`, `doctor`
 - [ ] **(user)** Verify `doctor` exits 0 after a week of normal use
 - [ ] **(user)** Record the real 30-day observation in the design doc as pending until the oldest ingested transcript has actually been cleaned up and is still searchable
 
 ### Task 16: Setup commands and runbook for outside steps
-- [ ] `agent-history setup database|cleanup-period|hooks|launchd|pointer|mirror`, each dry-run by default (prints the exact change or SQL), `--apply` writes with a timestamped backup where a file is changed; `--home` override for tests
-- [ ] `setup database` creates the `agent_history` database (owner: current user), applies migrations, creates `agent_history_reader`, and records the `node` path and connection URL in `~/.agent-history/config.json` (0600); `--roles-only` creates just the role for a restore; idempotent; tested only for its dry-run output during implementation
-- [ ] `setup hooks` merges into existing `settings.json` / `hooks.json` without removing other hooks, and is idempotent
-- [ ] `setup launchd` writes plists for the 15-minute scan and the weekly backup, with absolute `node` and repo paths
-- [ ] `setup pointer` appends the generated pointer once, between markers, so it can be updated or removed
-- [ ] Add `scripts/overhead.sh` (hook-on vs hook-off timing) and `scripts/capture-check.sh` (random reply word) for the live checks
-- [ ] Write `docs/RUNBOOK.md`: ordered commands for Tasks 1, 9, 11, 13, 14, 15 user items, with how to verify and undo each (undo for `setup database` is `"$PGBIN/dropdb" agent_history` after a dump)
-- [ ] Tests on temp homes and test DBs: dry-run writes nothing; apply is idempotent; existing unrelated hooks and settings survive; backups are created
+- [x] `agent-history setup database|cleanup-period|hooks|launchd|pointer|mirror`, each dry-run by default (prints the exact change or SQL), `--apply` writes with a timestamped backup where a file is changed; `--home` override for tests
+- [x] `setup database` creates the `agent_history` database (owner: current user), applies migrations, creates `agent_history_reader`, and records the `node` path and connection URL in `~/.agent-history/config.json` (0600); `--roles-only` creates just the role for a restore; idempotent; tested only for its dry-run output during implementation
+- [x] `setup hooks` merges into existing `settings.json` / `hooks.json` without removing other hooks, and is idempotent
+- [x] `setup launchd` writes plists for the 15-minute scan and the weekly backup, with absolute `node` and repo paths and `--max-old-space-size=192`; loading them (`launchctl bootstrap`) is printed for the user
+- [x] `setup export` turns on markdown export in `config.json`; `setup mirror` copies raw transcripts with `rsync` into a 0700 tree
+- [x] Every generated command is `"<node>" --max-old-space-size=192 "<repo>/bin/agent-history" …` (heap cap from the Task 9 memory measurement)
+- [x] `setup pointer` appends the generated pointer once, between markers, so it can be updated or removed
+- [x] Add `scripts/overhead.sh` (hook-on vs hook-off timing) and `scripts/capture-check.sh` (random reply word) for the live checks
+- [x] Write `docs/RUNBOOK.md`: ordered commands for Tasks 1, 9, 11, 13, 14, 15 user items, with how to verify and undo each (undo for `setup database` is `"$PGBIN/dropdb" agent_history` after a dump)
+- [x] Tests on temp homes and test DBs: dry-run writes nothing; apply is idempotent; existing unrelated hooks and settings survive; backups are created
 
 ## Decisions
 

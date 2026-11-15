@@ -6,6 +6,10 @@ import { logLine, readStdin, runHook } from './hook.js';
 import { scan } from './scan.js';
 import { doctor as runDoctor } from './doctor.js';
 import { exportRoot, exportSessions } from './export.js';
+import { setup as runSetup } from './setup.js';
+import { backup, restore } from './backup.js';
+import { historyHome } from './paths.js';
+import path from 'node:path';
 import { buildInventory, rootsFromEnv } from './inventory.js';
 
 const COMMANDS = {
@@ -14,7 +18,9 @@ const COMMANDS = {
   scan: 'Ingest every known transcript source',
   export: 'Write markdown copies of sessions',
   doctor: 'Report missing, partial and failed sources',
-  setup: 'Prepare outside changes (database, hooks, launchd, pointer); dry-run by default',
+  setup: 'Prepare outside changes: database|cleanup-period|hooks|launchd|pointer|mirror|export; dry-run unless --apply',
+  backup: 'Dump the database to ~/.agent-history/backups (keeps 8)',
+  restore: 'Restore a dump into a new database: restore <dump> --to <name>',
 };
 
 export function usage() {
@@ -105,7 +111,54 @@ async function exportCommand(args) {
   });
 }
 
-const HANDLERS = { init, doctor: doctorCommand, scan: scanCommand, ingest, export: exportCommand };
+const SETUP_TARGETS = ['database', 'cleanup-period', 'hooks', 'launchd', 'pointer', 'mirror', 'export'];
+
+async function setupCommand(args) {
+  const { values, positionals } = parseArgs({
+    args,
+    options: { apply: { type: 'boolean' }, home: { type: 'string' }, 'roles-only': { type: 'boolean' } },
+    allowPositionals: true,
+    strict: true,
+  });
+  const [what] = positionals;
+  if (!SETUP_TARGETS.includes(what) || positionals.length !== 1) {
+    console.error(`agent-history setup: target must be one of ${SETUP_TARGETS.join(', ')}`);
+    return 2;
+  }
+  await runSetup(what, { apply: Boolean(values.apply), home: values.home, rolesOnly: Boolean(values['roles-only']) });
+  return 0;
+}
+
+async function backupCommand(args) {
+  const { values } = parseArgs({ args, options: { dir: { type: 'string' } }, strict: true });
+  const r = await backup(databaseUrl(), values.dir ?? path.join(historyHome(), 'backups'));
+  console.log(`backup\t${r.file}`);
+  for (const old of r.removed) console.log(`removed\t${old}`);
+  return 0;
+}
+
+async function restoreCommand(args) {
+  const { values, positionals } = parseArgs({ args, options: { to: { type: 'string' } }, allowPositionals: true, strict: true });
+  if (positionals.length !== 1 || !values.to) {
+    console.error('agent-history restore: usage: restore <dump> --to <new database name>');
+    return 2;
+  }
+  const r = await restore(positionals[0], { serverUrl: databaseUrl(), database: values.to });
+  console.log(`restored\t${values.to}\tmigrations applied ${r.migrationsApplied}${r.freedLock ? '\tfreed stale migration lock' : ''}`);
+  console.log(`next: AGENT_HISTORY_DATABASE_URL=<url of ${values.to}> agent-history doctor`);
+  return 0;
+}
+
+const HANDLERS = {
+  init,
+  doctor: doctorCommand,
+  scan: scanCommand,
+  ingest,
+  export: exportCommand,
+  setup: setupCommand,
+  backup: backupCommand,
+  restore: restoreCommand,
+};
 
 export async function main(argv = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({

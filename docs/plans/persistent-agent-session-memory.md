@@ -45,17 +45,17 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [x] Verify `"$NODE" bin/agent-history --help` runs from a fresh shell, `npm test` passes, and no `agent_history_test_*` DB is left on the server afterwards
 
 ### Task 3: Source inventory and identity contract
-- [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
-- [ ] Read `.zst` with `fs.createReadStream(…).pipe(zlib.createZstdDecompress())` into `readline`, as a stream
-- [ ] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
-- [ ] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
-- [ ] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; multi-block and replay tests land with the parsers (Tasks 6–7) and ingest (Task 8)
-- [ ] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported; legacy record parsing lands in Task 7
-- [ ] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash
-- [ ] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
-- [ ] Classify unsupported layouts (unknown extension, unreadable file) as `unsupported`; recognized page segments are included; workflow `journal.jsonl` orchestration logs are `skipped`; inventory survives filesystem errors (port the `3d2d99c` fix)
-- [ ] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
-- [ ] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine (last Python run: Claude 371 root + 721 child + 2 skipped; Codex 126 plain + 687 zst active + 99 zst archived; 2002 sessions; numbers will have grown)
+- [x] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
+- [x] Read `.zst` with `fs.createReadStream(…).pipe(zlib.createZstdDecompress())` into `readline`, as a stream
+- [x] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
+- [x] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
+- [x] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; multi-block and replay tests land with the parsers (Tasks 6–7) and ingest (Task 8)
+- [x] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported; legacy record parsing lands in Task 7
+- [x] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash
+- [x] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
+- [x] Classify unsupported layouts (unknown extension, unreadable file) as `unsupported`; recognized page segments are included; workflow `journal.jsonl` orchestration logs are `skipped`; inventory survives filesystem errors (port the `3d2d99c` fix)
+- [x] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
+- [x] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine (last Python run: Claude 371 root + 721 child + 2 skipped; Codex 126 plain + 687 zst active + 99 zst archived; 2002 sessions). Node run 2026-11-16 matches `find` exactly: Claude 362 root + 694 child + 2 skipped; Codex 129 plain + 687 zst active + 99 zst archived; 1969 sessions; 0 empty, 0 unsupported, 0 unreadable, 0 duplicate segments. Claude counts dropped since the Python run: the 30-day cleanup is already deleting transcripts
 
 ### Task 4: Schema, roles, diagnostics
 - [ ] Knex migration `001_init.js` (`up` and `down`): `knex.raw('CREATE EXTENSION IF NOT EXISTS pg_trgm')`, then the tables below with `knex.schema.createTable`; Knex tracks applied migrations in `knex_migrations`

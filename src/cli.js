@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { databaseUrl, withDb } from './db.js';
 import { schemaStatus } from './schema.js';
+import { buildInventory, rootsFromEnv } from './inventory.js';
 
 const COMMANDS = {
   init: 'Create or migrate the history database',
@@ -36,7 +37,21 @@ async function doctor() {
   return 0;
 }
 
-const HANDLERS = { init, doctor };
+async function scan(args) {
+  const { values } = parseArgs({ args, options: { 'dry-run': { type: 'boolean' } }, strict: true });
+  if (!values['dry-run']) {
+    console.error('agent-history scan: only --dry-run is implemented yet');
+    return 2;
+  }
+  const inv = await buildInventory(rootsFromEnv());
+  for (const [key, n] of inv.counts()) console.log(`${key}\t${n}`);
+  console.log(`sessions\t${inv.sessions().size}`);
+  console.log(`duplicate_segments\t${inv.duplicateSegments().size}`);
+  for (const kind of ['empty', 'skipped', 'unsupported', 'unreadable']) console.log(`${kind}\t${inv[kind].length}`);
+  return 0;
+}
+
+const HANDLERS = { init, doctor, scan };
 
 export async function main(argv = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({

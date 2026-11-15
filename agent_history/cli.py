@@ -1,6 +1,7 @@
 import argparse
 import sys
 
+from agent_history import db
 from agent_history.inventory import Roots, build_inventory
 
 COMMANDS = {
@@ -36,5 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "scan" and args.dry_run:
         return print_inventory()
+    if args.command == "init":
+        path = db.default_db_path()
+        db.connect(path).close()
+        print(path)
+        return 0
     print(f"agent-history {args.command}: not implemented yet", file=sys.stderr)
     return 2

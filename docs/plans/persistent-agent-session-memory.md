@@ -50,16 +50,16 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 - [x] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine — Claude 371 root + 721 child + 2 skipped = 1094 files; Codex 126 plain + 687 zst active + 99 zst archived = 912 files; 0 empty, 0 unsupported, 2002 sessions
 
 ### Task 4: Schema, private files, diagnostics
-- [ ] Create `sessions` (id, tool, native_id, parent_id, agent_id, is_sidechain, project, cwd, started_at, ended_at, title, source_path, cli_version)
-- [ ] Create `messages` (id, session_id, ts, role, phase, kind, text, tool_name, files, provisional, raw, source_path, source_line, content_hash, parser_version)
-- [ ] Create FTS5 `messages_fts` over `messages.text` with insert/update/delete sync triggers
-- [ ] Create `sources` (path, session_id, encoding, content_hash, inode, size, offset, last_line, status, updated_at) for coverage and checkpoints
-- [ ] Create `ingest_errors` (ts, source_path, line, error_class, detail without message text) and `unknown_types` (tool, type, subtype, count)
-- [ ] Track schema version with `PRAGMA user_version`; refuse a DB with a newer version than the code knows
-- [ ] DB path `~/.agent-history/history.db`, overridable by `AGENT_HISTORY_DB`; parent dir created 0700; DB and WAL/SHM files 0600 via umask
-- [ ] Open with WAL and `busy_timeout=5000`
-- [ ] Add tests: `init` twice is idempotent; `journal_mode` is `wal`; DB, `-wal`, `-shm` and parent dir modes are 600/600/600/700 for both default and custom paths; FTS finds inserted, reflects updated, drops deleted rows; newer `user_version` is refused
-- [ ] Verify whether the system `sqlite3` CLI can run an FTS5 `MATCH` on the DB; record the result for the Task 13 pointer
+- [x] Create `sessions` (id, tool, native_id, parent_id, agent_id, is_sidechain, project, cwd, started_at, ended_at, title, source_path, cli_version)
+- [x] Create `messages` (id, session_id, ts, role, phase, kind, text, tool_name, files, provisional, raw, source_path, source_line, content_hash, parser_version)
+- [x] Create FTS5 `messages_fts` over `messages.text` with insert/update/delete sync triggers
+- [x] Create `sources` (path, session_id, encoding, content_hash, inode, size, offset, last_line, status, updated_at) for coverage and checkpoints
+- [x] Create `ingest_errors` (ts, source_path, line, error_class, detail without message text, resolved_at) and `unknown_types` (tool, type, subtype, count)
+- [x] Track schema version with `PRAGMA user_version`; refuse a DB with a newer version than the code knows
+- [x] DB path `~/.agent-history/history.db`, overridable by `AGENT_HISTORY_DB`; parent dir created 0700; DB and WAL/SHM files 0600 via umask
+- [x] Open with WAL and `busy_timeout=5000`
+- [x] Add tests: `init` twice is idempotent; `journal_mode` is `wal`; DB, `-wal`, `-shm` and parent dir modes are 600/600/600/700 for both default and custom paths; FTS finds inserted, reflects updated, drops deleted rows; newer `user_version` is refused
+- [x] Verify whether the system `sqlite3` CLI can run an FTS5 `MATCH` on the DB; record the result for the Task 13 pointer — works: `/usr/bin/sqlite3` 3.43.2 runs `MATCH` and `snippet()` on the DB
 
 ### Task 5: Sanitizer
 - [ ] Redact patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines

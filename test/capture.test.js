@@ -70,3 +70,11 @@ test('answer time is read from the final assistant text equal to the word', () =
   assert.equal(answerTime(codex, w, 'codex'), Date.parse('2026-11-16T10:00:07Z'));
   assert.equal(answerTime(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `not ${w}` }] } }), w, 'claude'), null);
 });
+
+test('Codex readiness waits for the final answer, not commentary with the same word', () => {
+  const w = 'capture5678';
+  const item = (phase, ts) => JSON.stringify({ type: 'response_item', timestamp: ts, payload: { type: 'message', role: 'assistant', phase, content: [{ type: 'output_text', text: w }] } });
+  const text = [item('commentary', '2026-11-16T10:00:00Z'), item('final_answer', '2026-11-16T10:01:10Z')].join('\n');
+  assert.equal(answerTime(text, w, 'codex'), Date.parse('2026-11-16T10:01:10Z'));
+  assert.equal(answerTime(item('commentary', '2026-11-16T10:00:00Z'), w, 'codex'), null);
+});

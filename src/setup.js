@@ -10,7 +10,7 @@ import { migrateWithLock } from './migrate.js';
 import { pointerText, POINTER_END, POINTER_START } from './pointer.js';
 import { readerRoleSql } from './roles.js';
 import { shellQuote } from './shell.js';
-import { rootsFromEnv } from './inventory.js';
+import { loadConfig } from './config.js';
 import { historyHome as resolveHistoryHome } from './paths.js';
 
 const run = promisify(execFile);
@@ -25,9 +25,13 @@ export function layout({ home, env = process.env } = {}) {
   const base = home ?? homedir();
   const claude = !explicit && env.CLAUDE_CONFIG_DIR ? env.CLAUDE_CONFIG_DIR : path.join(base, '.claude');
   const codex = !explicit && env.CODEX_HOME ? env.CODEX_HOME : path.join(base, '.codex');
-  const roots = explicit
-    ? { claudeProjects: path.join(claude, 'projects'), codexSessions: path.join(codex, 'sessions'), codexArchived: path.join(codex, 'archived_sessions') }
-    : rootsFromEnv(env, base, { useSaved: false });
+  const history = explicit ? path.join(base, '.agent-history') : resolveHistoryHome(env);
+  const saved = loadConfig({ AGENT_HISTORY_HOME: history }).roots ?? {};
+  const roots = {
+    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS || saved.claudeProjects || path.join(claude, 'projects'),
+    codexSessions: env.AGENT_HISTORY_CODEX_SESSIONS || saved.codexSessions || path.join(codex, 'sessions'),
+    codexArchived: env.AGENT_HISTORY_CODEX_ARCHIVED || saved.codexArchived || path.join(codex, 'archived_sessions'),
+  };
   return {
     home: base,
     claudeSettings: path.join(claude, 'settings.json'),
@@ -35,13 +39,14 @@ export function layout({ home, env = process.env } = {}) {
     codexHooks: path.join(codex, 'hooks.json'),
     agentsMd: path.join(codex, 'AGENTS.md'),
     ...roots,
-    historyHome: explicit ? path.join(base, '.agent-history') : resolveHistoryHome(env),
+    historyHome: history,
     launchAgents: path.join(base, 'Library', 'LaunchAgents'),
   };
 }
 
-export function commandLine(args, node = process.execPath) {
-  return [node, HEAP_FLAG, BIN, ...args].map(shellQuote).join(' ');
+export function commandLine(args, node = process.execPath, historyHome = null) {
+  const env = historyHome ? `AGENT_HISTORY_HOME=${shellQuote(historyHome)} ` : '';
+  return `${env}${[node, HEAP_FLAG, BIN, ...args].map(shellQuote).join(' ')}`;
 }
 
 async function readJson(file) {
@@ -94,7 +99,7 @@ function hookEntry(command) {
 
 const isManaged = (h) => typeof h?.command === 'string' && h.command.trimEnd().endsWith(MANAGED);
 
-export function mergeHooks(config, events, node) {
+export function mergeHooks(config, events, node, historyHome = null) {
   const out = structuredClone(config ?? {});
   out.hooks ??= {};
   for (const [event, args] of Object.entries(events)) {
@@ -108,7 +113,7 @@ export function mergeHooks(config, events, node) {
       const handlers = group.hooks.filter((h) => !isManaged(h));
       if (handlers.length) kept.push({ ...group, hooks: handlers });
     }
-    kept.push(hookEntry(commandLine(args, node)));
+    kept.push(hookEntry(commandLine(args, node, historyHome)));
     out.hooks[event] = kept;
   }
   return out;
@@ -193,8 +198,8 @@ async function planFiles(L, what, { node, url }) {
     const settings = (await readJson(L.claudeSettings)) ?? {};
     files.push({ file: L.claudeSettings, content: `${JSON.stringify({ ...settings, cleanupPeriodDays: 36500 }, null, 2)}\n`, mode: 0o600 });
   } else if (what === 'hooks') {
-    files.push({ file: L.claudeSettings, content: `${JSON.stringify(mergeHooks(await readJson(L.claudeSettings), CLAUDE_EVENTS, node), null, 2)}\n`, mode: 0o600 });
-    files.push({ file: L.codexHooks, content: `${JSON.stringify(mergeHooks(await readJson(L.codexHooks), CODEX_EVENTS, node), null, 2)}\n`, mode: 0o600 });
+    files.push({ file: L.claudeSettings, content: `${JSON.stringify(mergeHooks(await readJson(L.claudeSettings), CLAUDE_EVENTS, node, L.historyHome), null, 2)}\n`, mode: 0o600 });
+    files.push({ file: L.codexHooks, content: `${JSON.stringify(mergeHooks(await readJson(L.codexHooks), CODEX_EVENTS, node, L.historyHome), null, 2)}\n`, mode: 0o600 });
   } else if (what === 'launchd') {
     files.push({ file: path.join(L.launchAgents, `${SCAN_LABEL}.plist`), content: plist(SCAN_LABEL, ['scan', '--changed-since-last'], { node, historyHome: L.historyHome, interval: 900 }), mode: 0o644 });
     files.push({ file: path.join(L.launchAgents, `${BACKUP_LABEL}.plist`), content: plist(BACKUP_LABEL, ['backup'], { node, historyHome: L.historyHome, calendar: { Weekday: 0, Hour: 3, Minute: 0 } }), mode: 0o644 });

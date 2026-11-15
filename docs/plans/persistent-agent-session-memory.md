@@ -167,7 +167,7 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] **(user)** Ask for a randomized reply word and verify it in the correct session with `role=assistant` and `provisional=false` within 60 s; a match in the prompt is not success
 - [ ] **(user)** Verify a subagent run in both tools produces a child session linked to its parent
 - [ ] **(user)** Verify recovery: kill a session mid-turn, exit immediately after a turn, and run one turn with Postgres.app stopped; the launchd scan captures all three within 15 minutes of the server being back and `doctor` exits 0
-- [ ] **(user)** Measure foreground hook dispatch/return time against the 50 ms budget independently of model and network time; report paired end-to-end runs and worker latency separately as observations
+- [ ] **(user)** Measure foreground hook dispatch/return time against the 50 ms budget independently of model and network time; report paired end-to-end runs and worker latency separately as observations — open: neither agent exposes parent-side dispatch timings; `scripts/overhead.sh` only gives unbudgeted diagnostics (shell spawn ~5 ms, worker ~90 ms, answer-to-probe-start, e2e medians)
 - [ ] Verify a synthetic hook invocation against an unreachable server and against a DB with a broken schema exits 0 and records a private diagnostic; **(user)** verify real session completion with that setup
 - [ ] **(user)** Repeat the capture and overhead checks with Codex
 

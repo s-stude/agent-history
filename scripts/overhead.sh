@@ -2,9 +2,10 @@
 # Hook cost diagnostics.
 #   default: (a) shell-spawn diagnostic: bash backgrounding the hook argv (NOT the agent's dispatch path; unbudgeted)
 #            (b) worker latency: the hook command run to completion (runs in the background; unbudgeted)
-#   --dispatch (Claude, spends <runs> model calls): the agent's own hook dispatch delay, independent of model time:
-#            a probe Stop hook records its start time; delay = probe start - timestamp of the final assistant message
-#            in that session's transcript. This is the measurement for the 50 ms budget.
+#   --dispatch (Claude, spends <runs> model calls): answer-to-probe-start diagnostic, unbudgeted: a probe sync Stop hook
+#            records its start time; delay = probe start - timestamp of the final assistant record. It includes work before
+#            dispatch and the probe's own startup, and ends before dispatch returns, so it does NOT measure the foreground
+#            dispatch/return cost of the installed async hook; that acceptance check stays open.
 #   --e2e    (spends 2 x <runs> model calls): claude -p medians with hooks on vs off, observation only.
 # Usage: scripts/overhead.sh <transcript.jsonl> [runs] [--dispatch|--e2e]
 set -euo pipefail
@@ -36,7 +37,7 @@ if [ "$MODE" = "--dispatch" ]; then
   cat > "$WORK/settings.json" <<JSON
 {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"perl -MTime::HiRes=time -e 'printf \"%.1f\\\\n\", time*1000' >> $PROBE"}]}]}}
 JSON
-  echo "c. agent dispatch delay (probe Stop hook start - final answer timestamp), $RUNS runs:"
+  echo "c. answer-to-probe-start diagnostic (unbudgeted; not the foreground dispatch cost), $RUNS runs:"
   for _ in $(seq "$RUNS"); do
     uuid="$("$NODE" -e 'console.log(crypto.randomUUID())')"
     : > "$PROBE"
@@ -48,7 +49,7 @@ JSON
       const last = lines.filter((r) => r.type === "assistant").pop();
       console.log(new Date(last.timestamp).getTime());' "$file")"
     echo "$(head -1 "$PROBE") - $answered" | bc
-  done | median | xargs -I{} echo "   median {} ms (budget 50 ms)"
+  done | median | xargs -I{} echo "   median {} ms"
   rm -rf "$WORK"
 fi
 

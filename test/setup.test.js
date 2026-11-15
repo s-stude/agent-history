@@ -45,7 +45,7 @@ test('hooks: merged, unrelated hooks kept, idempotent, backed up once', async (t
   assert.equal(s.hooks.Stop[0].hooks[0].command, 'say done');
   const ours = s.hooks.Stop[1].hooks[0];
   assert.equal(ours.async, true);
-  assert.equal(ours.command, `/opt/node/bin/node ${HEAP_FLAG} ${shellQuote(BIN)} ingest ${MANAGED}`);
+  assert.equal(ours.command, `AGENT_HISTORY_HOME=${shellQuote(L.historyHome)} /opt/node/bin/node ${HEAP_FLAG} ${shellQuote(BIN)} ingest ${MANAGED}`);
   assert.match(s.hooks.SessionStart[0].hooks[0].command, /scan --changed-since-last # agent-history:managed$/);
   assert.equal(s.hooks.SubagentStop.length, 1);
   const codex = JSON.parse(await readFile(L.codexHooks, 'utf8'));
@@ -196,4 +196,38 @@ test('setup without --home honours AGENT_HISTORY_HOME and the effective roots; a
   });
   assert.equal(databaseUrl(clean), 'postgresql://localhost:6543/custom_history');
   await readFile(path.join(env.CODEX_HOME, 'hooks.json'), 'utf8');
+});
+
+test('a later setup step keeps the transcript roots saved by an earlier one', async (t) => {
+  const dir = await tmpDir(t);
+  const native = { AGENT_HISTORY_HOME: path.join(dir, 'hist'), CLAUDE_CONFIG_DIR: path.join(dir, 'ch'), CODEX_HOME: path.join(dir, 'cx') };
+  const roots = { AGENT_HISTORY_CLAUDE_PROJECTS: '/custom/claude', AGENT_HISTORY_CODEX_SESSIONS: '/custom/sessions', AGENT_HISTORY_CODEX_ARCHIVED: '/custom/archive' };
+  const quiet = { apply: true, node: '/n', url: 'postgresql://localhost/agent_history', log: () => {} };
+  await setup('hooks', { ...quiet, env: { ...native, ...roots } });
+  await setup('hooks', { ...quiet, env: native });
+  const saved = JSON.parse(await readFile(path.join(native.AGENT_HISTORY_HOME, 'config.json'), 'utf8')).roots;
+  assert.deepEqual(saved, { claudeProjects: '/custom/claude', codexSessions: '/custom/sessions', codexArchived: '/custom/archive' });
+});
+
+test('the installed hook command finds a custom history home from a cleared environment', async (t) => {
+  const dir = await tmpDir(t);
+  const transcripts = path.join(dir, 'transcripts');
+  await mkdir(path.join(transcripts, '-p'), { recursive: true });
+  await writeFile(path.join(transcripts, '-p', '43cec861-2203-414b-bfc7-b732d4b880f0.jsonl'), '{"type":"mode"}\n');
+  const env = {
+    AGENT_HISTORY_HOME: path.join(dir, 'custom-history'),
+    CLAUDE_CONFIG_DIR: path.join(dir, 'ch'),
+    CODEX_HOME: path.join(dir, 'cx'),
+    AGENT_HISTORY_CLAUDE_PROJECTS: transcripts,
+    AGENT_HISTORY_CODEX_SESSIONS: path.join(dir, 'none1'),
+    AGENT_HISTORY_CODEX_ARCHIVED: path.join(dir, 'none2'),
+  };
+  await setup('hooks', { env, apply: true, node: process.execPath, url: 'postgresql://localhost:6543/custom_history', log: () => {} });
+  const settings = JSON.parse(await readFile(path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'), 'utf8'));
+  const ingest = settings.hooks.Stop.at(-1).hooks[0].command;
+  assert.ok(ingest.startsWith(`AGENT_HISTORY_HOME=${shellQuote(env.AGENT_HISTORY_HOME)} `));
+  const dryRun = ingest.replace(/ ingest # agent-history:managed$/, ' scan --dry-run');
+  const { stdout } = await promisify(execFile)('/usr/bin/env', ['-i', 'PATH=/usr/bin:/bin', `HOME=${dir}`, '/bin/sh', '-c', dryRun]);
+  assert.match(stdout, /^claude\tplain\tactive\troot\t1$/m);
+  assert.match(stdout, /^sessions\t1$/m);
 });

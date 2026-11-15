@@ -58,7 +58,7 @@ export function answerTime(text, word, tool) {
       const blocks = Array.isArray(r.message?.content) ? r.message.content : [];
       if (blocks.some((b) => b.type === 'text' && b.text?.trim() === word)) return new Date(r.timestamp).getTime();
     }
-    if (tool === 'codex' && r.type === 'response_item' && r.payload?.role === 'assistant') {
+    if (tool === 'codex' && r.type === 'response_item' && r.payload?.role === 'assistant' && (r.payload.phase ?? 'final_answer') === 'final_answer') {
       if ((r.payload.content ?? []).some((b) => b.type === 'output_text' && b.text?.trim() === word)) return new Date(r.timestamp).getTime();
     }
   }

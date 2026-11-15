@@ -13,7 +13,7 @@ PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest/bin"
 
 Postgres.app 18 must be running (it starts at login). `cd "$REPO" && npm ci` once.
 
-Where the CLI finds its settings: environment variables first (`AGENT_HISTORY_DATABASE_URL`, `AGENT_HISTORY_*` roots), then `~/.agent-history/config.json` (written by `setup database|hooks|launchd`: endpoint without password, transcript roots, node path), then defaults. launchd jobs get `AGENT_HISTORY_HOME` in their plist so they read the same config. If your endpoint needs a password, put it in `~/.pgpass` (0600), never in the config.
+Where the CLI finds its settings: environment variables first (`AGENT_HISTORY_DATABASE_URL`, `AGENT_HISTORY_*` roots), then `~/.agent-history/config.json` (written by `setup database|hooks|launchd`: endpoint without password, transcript roots, node path), then defaults. Transcript roots at runtime: `AGENT_HISTORY_*` variables, then `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, then the saved config, then `~/.claude` / `~/.codex`. When `setup` saves roots it keeps explicit `AGENT_HISTORY_*` values, else what an earlier setup step saved, else the native homes. launchd jobs get `AGENT_HISTORY_HOME` in their plist and hook commands start with `AGENT_HISTORY_HOME=…`, so both read the same config. If your endpoint needs a password, put it in `~/.pgpass` (0600), never in the config.
 
 ## 1. Stop Claude Code from deleting old transcripts (Task 1) — do this first
 
@@ -95,7 +95,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.backup
   `"$PGBIN/psql" -d agent_history -c "SELECT id, parent_id, agent_id FROM sessions WHERE parent_id IS NOT NULL ORDER BY updated_at DESC LIMIT 5"`.
 - Check recovery: kill a session mid-turn; exit right after a turn; and run one turn with Postgres.app stopped (then start it). Within 15 minutes of the server being back, `AH doctor` exits 0 and all three turns are in the DB.
 - Check the launchd job connects without a permission prompt: after its first run, `~/.agent-history/com.agent-history.scan.err.log` is empty and `AH doctor` shows no `log_after_last_ingest` warning. If Postgres.app denied it, open Postgres.app → Settings → App Permissions and allow `$NODE`.
-- Overhead: `"$REPO/scripts/overhead.sh" <some transcript.jsonl> 10 --dispatch` measures the agent's own hook dispatch delay (probe Stop hook start minus the final answer's transcript timestamp; spends 10 model calls); this is the number for the 50 ms budget. Without `--dispatch` it only prints unbudgeted diagnostics (shell spawn ~5 ms, background worker ~90 ms on this Mac); `--e2e` adds hooks on/off medians as an observation.
+- Overhead: no tool here measures the foreground dispatch/return cost of the installed async hook itself; neither agent exposes those parent-side timings, so the 50 ms acceptance check stays open. `"$REPO/scripts/overhead.sh" <some transcript.jsonl> 10` prints unbudgeted diagnostics: shell spawn (~5 ms here), background worker latency (~90 ms here); `--dispatch` adds answer-to-probe-start (10 model calls) and `--e2e` adds hooks on/off `claude -p` medians (20 model calls). If hooks ever feel slow, compare an interactive session with and without them (`claude --settings` with `{"disableAllHooks": true}`).
 - Undo: restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`; `launchctl bootout gui/$(id -u)/com.agent-history.scan` (and `.backup`), then delete the two plists.
 
 ## 5. Tell the agents where history lives (Task 13)

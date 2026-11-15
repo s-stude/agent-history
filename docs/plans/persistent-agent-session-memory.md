@@ -37,17 +37,17 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 - [x] Verify `agent-history --help` runs from a fresh shell and pytest passes
 
 ### Task 3: Source inventory and identity contract
-- [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
-- [ ] Read `.zst` with `compression.zstd.open` as a stream
-- [ ] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
-- [ ] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
-- [ ] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; test replay and multi-block records
-- [ ] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported
-- [ ] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash
-- [ ] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
-- [ ] Classify unsupported layouts (unknown extension, paginated/migrated rollout layout, unreadable file) instead of skipping silently
-- [ ] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
-- [ ] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine
+- [x] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
+- [x] Read `.zst` with `compression.zstd.open` as a stream
+- [x] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
+- [x] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
+- [x] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; test replay and multi-block records — defined in `inventory.row_key`; multi-block and replay tests land with the parsers (Tasks 6–7) and ingest (Task 8)
+- [x] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported — inventory level; legacy record parsing lands in Task 7
+- [x] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash — `Source.immutable`; offset logic lands in Task 8
+- [x] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
+- [x] Classify unsupported layouts (unknown extension, paginated/migrated rollout layout, unreadable file) instead of skipping silently — unrecognized names are `unsupported`; recognized page segments are included; workflow `journal.jsonl` orchestration logs are `skipped`
+- [x] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
+- [x] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine — Claude 371 root + 721 child + 2 skipped = 1094 files; Codex 126 plain + 687 zst active + 99 zst archived = 912 files; 0 empty, 0 unsupported, 2002 sessions
 
 ### Task 4: Schema, private files, diagnostics
 - [ ] Create `sessions` (id, tool, native_id, parent_id, agent_id, is_sidechain, project, cwd, started_at, ended_at, title, source_path, cli_version)

@@ -121,3 +121,55 @@ test('project from cwd strips worktree folders', () => {
   assert.equal(projectFromCwd('/Users/me/projects/demo/.worktrees/feature-x'), 'demo');
   assert.equal(projectFromCwd(null), null);
 });
+
+function line(fields) {
+  return JSON.stringify({ sessionId: PARENT, cwd: '/w/demo', timestamp: '2026-11-01T10:00:00.000Z', ...fields });
+}
+
+const SECRET = 'synthetic-secret-123';
+const JSON_SECRET = JSON.stringify({ password: SECRET });
+
+test('JSON-shaped prompt, answer, summary and system text are sanitized structurally', async (t) => {
+  const inv = await setup(t);
+  const parser = createClaudeParser(inv.sources[0]);
+  const cases = [
+    line({ type: 'user', uuid: 'j1', message: { role: 'user', content: JSON_SECRET } }),
+    line({ type: 'user', uuid: 'j2', message: { role: 'user', content: JSON.stringify(JSON_SECRET) } }),
+    line({ type: 'user', uuid: 'j3', message: { role: 'user', content: [{ type: 'text', text: JSON_SECRET }] } }),
+    line({ type: 'assistant', uuid: 'j4', message: { role: 'assistant', content: [{ type: 'text', text: JSON_SECRET }] } }),
+    line({ type: 'user', uuid: 'j5', isCompactSummary: true, message: { role: 'user', content: JSON_SECRET } }),
+    line({ type: 'system', uuid: 'j6', subtype: 'compact_boundary', content: JSON_SECRET }),
+  ];
+  const rows = cases.flatMap((l, i) => parser.parseLine(l, i + 1));
+  assert.equal(rows.length, cases.length);
+  for (const r of rows) {
+    assert.ok(!r.text.includes(SECRET), `text of ${r.record_id}`);
+    assert.ok(!r.raw.includes(SECRET), `raw of ${r.record_id}`);
+  }
+});
+
+test('command output is bounded the same in string and array form', async (t) => {
+  const inv = await setup(t);
+  const parser = createClaudeParser(inv.sources[0]);
+  for (const tag of ['bash-stdout', 'bash-stderr', 'local-command-stdout', 'local-command-stderr']) {
+    const body = `<${tag}>${'z'.repeat(1000)}</${tag}>`;
+    const [a] = parser.parseLine(line({ type: 'user', uuid: `${tag}-s`, message: { role: 'user', content: body } }), 1);
+    const [b] = parser.parseLine(line({ type: 'user', uuid: `${tag}-a`, message: { role: 'user', content: [{ type: 'text', text: body }] } }), 2);
+    assert.equal(a.kind, 'command_output');
+    assert.equal(b.kind, 'command_output');
+    assert.equal(a.text, b.text, tag);
+    assert.ok(a.text.length < 520, tag);
+  }
+});
+
+test('an invalid timestamp yields ts null and is counted; the next record is fine', async (t) => {
+  const inv = await setup(t);
+  const parser = createClaudeParser(inv.sources[0]);
+  const [bad] = parser.parseLine(line({ type: 'user', uuid: 'b1', timestamp: 'not-a-date', message: { role: 'user', content: 'hi' } }), 1);
+  const [good] = parser.parseLine(line({ type: 'user', uuid: 'b2', message: { role: 'user', content: 'there' } }), 2);
+  assert.equal(bad.ts, null);
+  assert.equal(parser.unknown.get('invalid-timestamp'), 1);
+  assert.equal(good.ts.toISOString(), '2026-11-01T10:00:00.000Z');
+  const session = parser.finish();
+  assert.equal(session.started_at.toISOString(), '2026-11-01T10:00:00.000Z');
+});

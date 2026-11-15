@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { recordId } from '../inventory.js';
 import { bounded, redactText, sanitize, sanitizeLine } from '../redact.js';
+import { cleanBounded, cleanText, safeDate } from './common.js';
 
 export const PARSER_VERSION = 1;
 export const TOOL_TEXT_LIMIT = 500;
@@ -58,6 +59,10 @@ function filesFromInput(input) {
   return out.map(redactText);
 }
 
+function userText(kind, text) {
+  return kind === 'command_output' ? cleanBounded(text, TOOL_TEXT_LIMIT) : cleanText(text);
+}
+
 function classifyUserString(text) {
   const tag = /^\s*<([a-z-]+)[\s>]/.exec(text)?.[1];
   if (tag && tag in TAG_KIND) return TAG_KIND[tag];
@@ -96,12 +101,10 @@ export function createClaudeParser(source) {
       session.project = redactText(projectFromCwd(r.cwd));
     }
     if (r.version && !session.cli_version) session.cli_version = String(r.version);
-    if (r.timestamp) {
-      const ts = new Date(r.timestamp);
-      if (!Number.isNaN(ts.getTime())) {
-        if (!session.started_at || ts < session.started_at) session.started_at = ts;
-        if (!session.ended_at || ts > session.ended_at) session.ended_at = ts;
-      }
+    const ts = safeDate(r.timestamp);
+    if (ts) {
+      if (!session.started_at || ts < session.started_at) session.started_at = ts;
+      if (!session.ended_at || ts > session.ended_at) session.ended_at = ts;
     }
   }
 
@@ -143,7 +146,7 @@ export function createClaudeParser(source) {
     const base = {
       session_id: session.id,
       record_id: recordId(source, r.uuid, lineNo),
-      ts: r.timestamp ? new Date(r.timestamp) : null,
+      ts: safeDate(r.timestamp, () => count(unknown, 'invalid-timestamp')),
       phase: null,
       turn_id: null,
       tool_name: null,
@@ -160,20 +163,18 @@ export function createClaudeParser(source) {
     const push = (ordinal, fields) => rows.push({ ...base, block_ordinal: ordinal, ...fields });
 
     if (type === 'system') {
-      push(0, { role: 'system', kind: r.subtype, text: redactText(String(r.content ?? r.prompt ?? '')) });
+      push(0, { role: 'system', kind: r.subtype, text: cleanText(String(r.content ?? r.prompt ?? '')) });
     } else if (type === 'user') {
       const content = r.message?.content;
       if (r.isCompactSummary) {
-        push(0, { role: 'user', kind: 'summary', text: redactText(blockText(content)) });
+        push(0, { role: 'user', kind: 'summary', text: cleanText(blockText(content)) });
       } else if (r.isMeta) {
         count(skipped, 'user/meta');
       } else if (typeof content === 'string') {
         const kind = classifyUserString(content);
         if (!kind) count(skipped, 'user/injected');
         else {
-          const [role, k] = kind;
-          const text = k === 'command_output' ? bounded(content, TOOL_TEXT_LIMIT) : redactText(content);
-          push(0, { role, kind: k, text });
+          push(0, { role: kind[0], kind: kind[1], text: userText(kind[1], content) });
         }
       } else if (Array.isArray(content)) {
         content.forEach((block, i) => {
@@ -187,7 +188,8 @@ export function createClaudeParser(source) {
             });
           } else if (block?.type === 'text') {
             const kind = classifyUserString(block.text ?? '');
-            if (kind) push(i, { role: kind[0], kind: kind[1], text: redactText(block.text ?? '') });
+            if (kind) push(i, { role: kind[0], kind: kind[1], text: userText(kind[1], block.text ?? '') });
+            else count(skipped, 'user/injected');
           } else if (block?.type === 'image' || block?.type === 'document') {
             push(i, { role: 'user', kind: block.type, text: `[${block.type}]` });
           } else {
@@ -200,7 +202,7 @@ export function createClaudeParser(source) {
       const blocks = Array.isArray(content) ? content : typeof content === 'string' ? [{ type: 'text', text: content }] : [];
       blocks.forEach((block, i) => {
         if (block?.type === 'text') {
-          push(i, { role: 'assistant', kind: 'text', text: redactText(block.text ?? '') });
+          push(i, { role: 'assistant', kind: 'text', text: cleanText(block.text ?? '') });
         } else if (block?.type === 'tool_use') {
           if (block.id) toolNames.set(block.id, block.name);
           push(i, {
@@ -224,7 +226,7 @@ export function createClaudeParser(source) {
 
   function finish() {
     const title = customTitle ?? aiTitle ?? agentName;
-    session.title = title ? redactText(title) : null;
+    session.title = title ? cleanText(title) : null;
     return session;
   }
 

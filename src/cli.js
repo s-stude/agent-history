@@ -18,7 +18,12 @@ export function usage() {
   return ['Usage: agent-history <command> [options]', '', 'Commands:', ...lines, ''].join('\n');
 }
 
-async function init() {
+function noOptions(args) {
+  parseArgs({ args, options: {}, strict: true, allowPositionals: false });
+}
+
+async function init(args) {
+  noOptions(args);
   await withDb(databaseUrl(), async (db) => {
     const [, applied] = await db.migrate.latest();
     console.log(`migrations applied: ${applied.length}`);
@@ -26,7 +31,8 @@ async function init() {
   return 0;
 }
 
-async function doctor() {
+async function doctor(args) {
+  noOptions(args);
   await withDb(databaseUrl(), async (db) => {
     const { rows } = await db.raw('SELECT current_setting(?) AS version, current_database() AS database', ['server_version']);
     const schema = await schemaStatus(db);
@@ -61,7 +67,7 @@ export async function main(argv = process.argv.slice(2)) {
     strict: false,
   });
   const [command] = positionals;
-  if (values.help && !command) {
+  if (values.help) {
     process.stdout.write(usage());
     return 0;
   }
@@ -75,8 +81,12 @@ export async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   try {
-    return await handler(argv.slice(1));
+    return await handler(argv.slice(argv.indexOf(command) + 1));
   } catch (err) {
+    if (err.code?.startsWith('ERR_PARSE_ARGS')) {
+      console.error(`agent-history ${command}: ${err.message}`);
+      return 2;
+    }
     console.error(`agent-history ${command}: ${err.code || err.name}: ${err.message}`);
     return 1;
   }

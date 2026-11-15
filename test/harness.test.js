@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { createTestDb, serverReachable, serverUrl, TEST_DB_PATTERN } from './helpers/db.js';
 import { openDb } from '../src/db.js';
 import { schemaStatus } from '../src/schema.js';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpDir } from './helpers/tmp.js';
 
 async function dbExists(name) {
   const admin = openDb(serverUrl());
@@ -36,4 +39,20 @@ test('schema inspection of a pristine DB creates no migration tables', async (t)
   assert.equal(status.state, 'uninitialized');
   const { rows } = await h.db.raw("SELECT count(*)::int AS n FROM pg_tables WHERE tablename LIKE 'knex_migrations%'");
   assert.equal(rows[0].n, 0);
+});
+
+test('a failing migration drops the created test DB', async (t) => {
+  if (!(await serverReachable())) return t.skip('PostgreSQL server unreachable');
+  const dir = await tmpDir(t);
+  await writeFile(path.join(dir, '001_broken.js'), "export async function up() { throw new Error('boom'); }\nexport async function down() {}\n");
+  const created = [];
+  await assert.rejects(createTestDb({ label: 'broken', migrationsDirectory: dir }), /boom/);
+  const admin = openDb(serverUrl());
+  try {
+    const rows = await admin('pg_database').where('datname', 'like', 'agent\\_history\\_test\\_broken\\_' + process.pid + '\\_%').select('datname');
+    created.push(...rows.map((r) => r.datname));
+  } finally {
+    await admin.destroy();
+  }
+  assert.deepEqual(created, []);
 });

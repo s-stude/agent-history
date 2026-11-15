@@ -30,37 +30,43 @@ export async function serverReachable(url = serverUrl()) {
   }
 }
 
-export async function createTestDb({ label = '', migrate = true } = {}) {
+export async function createTestDb({ label = '', migrate = true, migrationsDirectory } = {}) {
   const name = testDbName(label);
   if (!TEST_DB_PATTERN.test(name)) throw new Error(`refusing test database name ${name}`);
-  const admin = openDb(serverUrl());
+  const adminUrl = serverUrl();
+  const admin = openDb(adminUrl);
   try {
     await admin.raw('CREATE DATABASE ?? TEMPLATE template0', [name]);
   } finally {
     await admin.destroy();
   }
-  const url = urlFor(serverUrl(), name);
+  const url = urlFor(adminUrl, name);
   const instances = [];
-  const open = (options) => {
-    const db = openDb(url, options);
-    instances.push(db);
-    return db;
-  };
-  const db = open();
-  if (migrate) await db.migrate.latest();
   let dropped = false;
   const drop = async () => {
     if (dropped) return;
-    dropped = true;
-    await Promise.all(instances.map((i) => i.destroy()));
-    const admin = openDb(serverUrl());
+    await Promise.all(instances.splice(0).map((i) => i.destroy()));
+    const dropAdmin = openDb(adminUrl);
     try {
-      await admin.raw('DROP DATABASE IF EXISTS ?? WITH (FORCE)', [name]);
+      await dropAdmin.raw('DROP DATABASE IF EXISTS ?? WITH (FORCE)', [name]);
+      dropped = true;
     } finally {
-      await admin.destroy();
+      await dropAdmin.destroy();
     }
   };
-  return { name, url, db, open, drop };
+  const open = (options) => {
+    const db = openDb(url, { migrationsDirectory, ...options });
+    instances.push(db);
+    return db;
+  };
+  try {
+    const db = open();
+    if (migrate) await db.migrate.latest();
+    return { name, url, db, open, drop };
+  } catch (err) {
+    await drop();
+    throw err;
+  }
 }
 
 export async function useTestDb(t, options) {

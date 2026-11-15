@@ -8,7 +8,10 @@ export function databaseUrl(env = process.env) {
   return env.AGENT_HISTORY_DATABASE_URL || DEFAULT_DATABASE_URL;
 }
 
-export function knexConfig(connectionString, { connectionTimeoutMillis = 3000, statementTimeout = 30000 } = {}) {
+export function knexConfig(
+  connectionString,
+  { connectionTimeoutMillis = 3000, statementTimeout = 30000, migrationsDirectory = MIGRATIONS_DIR } = {},
+) {
   return {
     client: 'pg',
     connection: {
@@ -19,7 +22,7 @@ export function knexConfig(connectionString, { connectionTimeoutMillis = 3000, s
     },
     pool: { min: 0, max: 1 },
     acquireConnectionTimeout: connectionTimeoutMillis + 2000,
-    migrations: { directory: MIGRATIONS_DIR, loadExtensions: ['.js'] },
+    migrations: { directory: migrationsDirectory, loadExtensions: ['.js'] },
   };
 }
 

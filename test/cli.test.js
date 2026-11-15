@@ -44,3 +44,18 @@ test('doctor reports an uninitialized test DB from an unrelated cwd', async (t) 
   assert.match(r.stdout, new RegExp(`^database\\t${h.name}$`, 'm'));
   assert.match(r.stdout, /^schema\tuninitialized/m);
 });
+
+test('subcommand --help and -h show usage without running the command', async () => {
+  const env = { AGENT_HISTORY_DATABASE_URL: 'postgresql://localhost:1/agent_history_test_none' };
+  for (const args of [['init', '--help'], ['init', '-h'], ['doctor', '--help']]) {
+    const r = await cli(args, env);
+    assert.equal(r.code, 0, args.join(' '));
+    assert.match(r.stdout, /Usage: agent-history/);
+  }
+});
+
+test('unknown flags are rejected before a command runs', async () => {
+  const r = await cli(['init', '--bogus'], { AGENT_HISTORY_DATABASE_URL: 'postgresql://localhost:1/agent_history_test_none' });
+  assert.equal(r.code, 2);
+  assert.match(r.stderr, /agent-history init: .*bogus/);
+});

@@ -12,12 +12,13 @@ const PATTERNS = [
   ['bearer', /(?<=bearer )[A-Za-z0-9._~+/=-]{16,}/gi],
 ];
 
-const SECRET_NAME = '[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)S?';
+const SECRET_NAME = '(?=[A-Z])[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)S?';
+const ENV_VALUE = `"(?:[^"\\\\\\n]|\\\\.)*"|'[^'\\n]*'|[^\\s"'#][^\\s#]{3,}`;
 const ENV_ASSIGN = new RegExp(
-  `^(?<lead>[ \\t]*(?:export[ \\t]+)?${SECRET_NAME}[ \\t]*[=:][ \\t]*)` +
-    `(?<value>(?=["']?[^\\s"'#]*[A-Za-z])["']?[^\\s"'#]{4,}["']?)`,
+  `^(?<lead>[ \\t]*(?:export[ \\t]+)?(?<name>${SECRET_NAME})[ \\t]*[=:][ \\t]*)(?<value>${ENV_VALUE})`,
   'gm',
 );
+const METRIC_NAME = /(?:^|_)(?:MAX|MIN|NUM|COUNT|TOTAL|LIMIT)(?:_|$)|TOKENS?_(?:COUNT|LIMIT|USED|BUDGET)$/;
 const SECRET_KEY = new RegExp(
   '^(?:api[_-]?key|apikey|x-api-key|secret|client[_-]?secret|password|passwd|' +
     'access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|authorization|private[_-]?key|' +
@@ -25,18 +26,26 @@ const SECRET_KEY = new RegExp(
   'i',
 );
 
+const IDENT = '[A-Za-z_][A-Za-z0-9_]*';
 const REFERENCE_VALUE = new RegExp(
   [
-    '^\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?$',
-    '^(?:process\\.env|os\\.environ|os\\.getenv|import\\.meta\\.env|env)[.(\\[]',
-    '^(?:<[^<>]*>|\\{\\{[^{}]*\\}\\})$',
-    '^[A-Za-z_][A-Za-z0-9_]+(?:\\.[A-Za-z_][A-Za-z0-9_]+)+(?:\\(\\)?)?,?$',
+    `^\\$\\{?${IDENT}\\}?$`,
+    `^process\\.env(?:\\.${IDENT}|\\[(?:'${IDENT}'|"${IDENT}")\\])[,;]?$`,
+    `^import\\.meta\\.env\\.${IDENT}[,;]?$`,
+    `^os\\.environ(?:\\[(?:'${IDENT}'|"${IDENT}")\\]|\\.get\\((?:'${IDENT}'|"${IDENT}")\\))[,;)]?$`,
+    `^os\\.getenv\\((?:'${IDENT}'|"${IDENT}")\\)[,;)]?$`,
+    `^${IDENT}(?:\\.${IDENT})+(?:\\(\\))?[,;]$`,
+    `^${IDENT}(?:\\.${IDENT})+\\(\\)$`,
   ].join('|'),
 );
+const PLACEHOLDER_VALUE = /^["']?<[^<>\s]{1,60}>["']?$/;
+const REDACTED_MARKER = /^\[REDACTED(?::\w+)?\]$/;
 
-function isReference(value) {
-  const v = value.replace(/^["']|["']$/g, '');
-  return v.length <= 80 && REFERENCE_VALUE.test(v);
+function keepAssignment(name, value) {
+  if (/^\d+$/.test(value) && METRIC_NAME.test(name)) return true;
+  if (PLACEHOLDER_VALUE.test(value)) return true;
+  const quoted = /^["']/.test(value);
+  return !quoted && value.length <= 120 && REFERENCE_VALUE.test(value);
 }
 
 export function stripNul(text) {
@@ -48,14 +57,18 @@ export function redactText(text) {
   let out = stripNul(text);
   for (const [name, pattern] of PATTERNS) out = out.replace(pattern, `[REDACTED:${name}]`);
   return out.replace(ENV_ASSIGN, (match, ...args) => {
-    const { lead, value } = args.at(-1);
-    return isReference(value) ? match : `${lead}[REDACTED:env]`;
+    const { lead, name, value } = args.at(-1);
+    return keepAssignment(name, value) ? match : `${lead}[REDACTED:env]`;
   });
 }
 
+const MAX_DEPTH = 32;
+
 function maybeJson(text) {
   const s = text.trim();
-  if (s.length < 2 || !'{['.includes(s[0]) || !'}]'.includes(s.at(-1))) return undefined;
+  if (s.length < 2) return undefined;
+  const pair = s[0] + s.at(-1);
+  if (pair !== '{}' && pair !== '[]' && pair !== '""') return undefined;
   try {
     return JSON.parse(s);
   } catch {
@@ -63,19 +76,21 @@ function maybeJson(text) {
   }
 }
 
-export function sanitize(value) {
+export function sanitize(value, depth = 0) {
   if (typeof value === 'string') {
-    const decoded = maybeJson(value);
-    if (decoded !== null && typeof decoded === 'object') return JSON.stringify(sanitize(decoded));
+    const decoded = depth < MAX_DEPTH ? maybeJson(value) : undefined;
+    if (decoded !== undefined && decoded !== null && (typeof decoded === 'object' || typeof decoded === 'string')) {
+      return JSON.stringify(sanitize(decoded, depth + 1));
+    }
     return redactText(value);
   }
-  if (Array.isArray(value)) return value.map(sanitize);
+  if (Array.isArray(value)) return value.map((v) => sanitize(v, depth));
   if (value !== null && typeof value === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       const key = stripNul(k);
-      if (typeof v === 'string' && SECRET_KEY.test(k) && v && !v.startsWith('[REDACTED')) out[key] = '[REDACTED:field]';
-      else out[key] = sanitize(v);
+      if (typeof v === 'string' && SECRET_KEY.test(key) && v && !REDACTED_MARKER.test(v)) out[key] = '[REDACTED:field]';
+      else out[key] = sanitize(v, depth);
     }
     return out;
   }

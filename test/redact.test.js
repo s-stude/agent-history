@@ -116,6 +116,7 @@ test('env assignments whose value is a reference are kept', () => {
     'API_KEY: process.env.ANTHROPIC_API_KEY,',
     "DB_PASSWORD: os.environ['DB_PASSWORD']",
     'SLACK_TOKEN=<your-token-here>',
+    'SLACK_TOKEN="<your-token-here>"',
     'CLIENT_SECRET: {{ secrets.client }}',
     'JWT_SECRET: config.auth.jwtSecret,',
     'ACCESS_TOKEN: settings.get_token()',
@@ -124,9 +125,58 @@ test('env assignments whose value is a reference are kept', () => {
   }
 });
 
-test('opaque env values next to reference-like ones are still redacted', () => {
-  for (const value of [S.ENV_VALUE, 'hunter2', 'Ab3.x9Q$', 'p4ss.w0rd!', `"${S.ENV_VALUE}"`, 'a'.repeat(90) + '.b']) {
-    const out = redactText(`DB_PASSWORD=${value}`);
-    assert.equal(out, 'DB_PASSWORD=[REDACTED:env]', value);
+test('opaque and literal env values are fully redacted', () => {
+  const cases = [
+    'PASSWORD=hunter2',
+    'DB_PASSWORD=1234567890',
+    'DB_PASSWORD="correct horse battery staple"',
+    "DB_PASSWORD='x#SecretTail123'",
+    'DB_PASSWORD="my.secret.pass"',
+    'DB_PASSWORD=Ab3.x9Q',
+    'DB_PASSWORD=my.secret.pass',
+    'DB_PASSWORD=process.env.prefix-secret',
+    `DB_PASSWORD=${S.ENV_VALUE}`,
+    `DB_PASSWORD="${S.ENV_VALUE}"`,
+    'DB_PASSWORD="config.auth.jwtSecret,"',
+  ];
+  for (const line of cases) {
+    assert.equal(redactText(line), 'DB_PASSWORD=[REDACTED:env]'.replace('DB_PASSWORD', line.split('=')[0]), line);
+    assert.ok(!sanitizeLine(JSON.stringify({ text: `${line}\nnext` })).includes(line.split('=')[1]), line);
   }
+});
+
+test('a quoted value is removed whole, the rest of the line stays', () => {
+  assert.equal(redactText('DB_PASSWORD="correct horse battery staple" # note'), 'DB_PASSWORD=[REDACTED:env] # note');
+});
+
+test('numeric token-count metrics are not credentials', () => {
+  for (const line of ['MAX_TOKENS: 4096', 'MAX_OUTPUT_TOKENS=8192', 'TOKENS_USED: 1234', 'NUM_TOKENS=12']) assert.equal(redactText(line), line);
+});
+
+test('JSON strings encoded twice or more are sanitized inside', () => {
+  let value = { password: 'synthetic-secret-123', note: 'ok' };
+  for (let depth = 1; depth <= 3; depth++) {
+    value = JSON.stringify(value);
+    const out = sanitize({ text: value });
+    assert.ok(!JSON.stringify(out).includes('synthetic-secret-123'), `depth ${depth}`);
+    assert.ok(!sanitizeLine(JSON.stringify({ text: value })).includes('synthetic-secret-123'), `line depth ${depth}`);
+  }
+});
+
+test('deep encoding stops at the depth limit and still redacts text', () => {
+  let value = `PASSWORD=${S.ENV_VALUE}`;
+  for (let i = 0; i < 12; i++) value = JSON.stringify(value);
+  assert.ok(!JSON.stringify(sanitize({ text: value })).includes(S.ENV_VALUE));
+});
+
+test('secret field names are checked after NUL removal; only exact markers are skipped', () => {
+  assert.deepEqual(sanitize({ 'pass\u0000word': 'synthetic-secret-123' }), { password: '[REDACTED:field]' });
+  assert.deepEqual(sanitize({ password: '[REDACTED]synthetic-secret-123' }), { password: '[REDACTED:field]' });
+  assert.deepEqual(sanitize({ password: '[REDACTED:env]' }), { password: '[REDACTED:env]' });
+});
+
+test('redaction happens before trimming for assignment values', () => {
+  const out = bounded(`${'x'.repeat(480)}\nDB_PASSWORD="correct horse battery staple"`, 500);
+  assert.ok(!out.includes('correct'));
+  assert.ok(!out.includes('battery'));
 });

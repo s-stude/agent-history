@@ -4,7 +4,7 @@ Nov 16, 2026 · @Akim @gmail
 
 ## Summary
 
-Build a permanent, searchable store of every Claude Code and Codex session, saved by lifecycle hooks into one local PostgreSQL database (Postgres.app on this Mac), so an agent can answer "remember last month…" and run project retrospectives. The agent learns the database exists from a one-line pointer in CLAUDE.md / AGENTS.md (progressive disclosure) and searches it with plain tools: `psql` with PostgreSQL full-text search (`tsvector` + GIN) and trigram matching (`pg_trgm`), plus grep over optional markdown exports. No embeddings and no extra service beyond the Postgres.app server that already runs at login. The capture code is a small Node.js CLI. Expected effort: about one day for a working first version.
+Build a permanent, searchable store of every Claude Code and Codex session, saved by lifecycle hooks into one local PostgreSQL database (Postgres.app on this Mac), so an agent can answer "remember last month…" and run project retrospectives. The agent learns the database exists from a one-line pointer in CLAUDE.md / AGENTS.md (progressive disclosure) and searches it with plain tools: `psql` with PostgreSQL full-text search (`tsvector` + GIN) and trigram matching (`pg_trgm`), plus grep over optional markdown exports. No embeddings and no extra service beyond the Postgres.app server that already runs at login. The capture code is a small Node.js CLI in plain JavaScript, using Knex for PostgreSQL. Expected effort: about one day for a working first version.
 
 ## Problem
 
@@ -42,7 +42,7 @@ The top row runs on every turn without anyone noticing; the bottom row runs only
 **Components**
 
 1. **Hook config.** Claude Code in `~/.claude/settings.json`, Codex in `~/.codex/hooks.json`. `Stop` (async) runs `agent-history ingest`; `SessionStart` runs a catch-up scan for sessions not fully saved.
-2. **Ingest CLI (Node.js).** `agent-history`, run with an absolute `node` path. Reads the hook's stdin JSON (`session_id`, `transcript_path`, `cwd`, `last_assistant_message`), reads the transcript from the last saved offset, redacts secrets, trims tool output and upserts rows with `INSERT … ON CONFLICT` through the `pg` client.
+2. **Ingest CLI (Node.js).** `agent-history`, run with an absolute `node` path. Reads the hook's stdin JSON (`session_id`, `transcript_path`, `cwd`, `last_assistant_message`), reads the transcript from the last saved offset, redacts secrets, trims tool output and upserts rows with Knex (`insert().onConflict().merge()`, on top of the `pg` driver).
 3. **Schema.** Database `agent_history`: `sessions` (id, tool, project, cwd, started\_at, ended\_at, title, transcript\_path) and `messages` (id, session\_id, ts, role, text, tool\_name, files), with a generated `tsvector` column over the text, a GIN index on it, and a trigram GIN index for substring search (paths, identifiers, error strings).
 4. **Markdown export (optional).** One file per session at `~/.agent-history/md/<project>/<date>-<id>.md`, so grep, ripgrep and tree work as in the original post.
 5. **Doc-tree pointer.** A few lines in the global CLAUDE.md / AGENTS.md, written as plain facts:
@@ -69,7 +69,7 @@ Markdown copies: ~/.agent-history/md/<project>/
 | Discovery | Always inject history, pointer only | Pointer only: a 3–5 line note in CLAUDE.md / AGENTS.md, so context costs nothing until asked |
 | Hook mode | Synchronous, async | `async: true` so sessions never wait on the database |
 | Store | SQLite file, local PostgreSQL | PostgreSQL in the Postgres.app server already running at login: real concurrent writers, full-text and trigram search, `psql` and GUI clients; one database `agent_history` with a `project` column |
-| Language | Python, Node.js, Go | Node.js (TypeScript run by Node's built-in type stripping), `pg` as the only runtime dependency; Node reads `.zst` natively |
+| Language | Python, Node.js, Go | Node.js, plain JavaScript (ES modules, no build step); Knex as the query builder and migration tool over the `pg` driver; Node reads `.zst` natively |
 | Retention | Raise `cleanupPeriodDays` too, or not | Both: raise it as a backstop and keep the DB as the source of truth |
 
 ## Risks and mitigations

@@ -2,7 +2,7 @@
 
 Design: [Design Plan](../Persistent%20Agent%20Session%20Memory%20—%20Design%20Plan.md) · [Proposal](../Persistent%20Agent%20Session%20Memory%20—%20Proposal.md)
 
-Stack: Node.js ≥ 22.18 (type stripping on by default; installed: v22.22.0 via nvm), TypeScript run directly by Node, `pg` client, PostgreSQL 18 in Postgres.app on `localhost:5432`. The earlier Python + SQLite implementation of Tasks 2–5 (commits `9dbd41e`…`e477aff`) was removed in `9c1605d`; use it as the behavioural reference when porting, including its tests.
+Stack: Node.js ≥ 22.15 (installed: v22.22.0 via nvm), plain JavaScript ES modules, Knex over the `pg` driver, PostgreSQL 18 in Postgres.app on `localhost:5432`. The earlier Python + SQLite implementation of Tasks 2–5 (commits `9dbd41e`…`e477aff`) was removed in `9c1605d`; use it as the behavioural reference when porting, including its tests.
 
 Rule for every task: destructive tests (corruption, cleanup, moved or replaced files) run against isolated test homes under `./tmp/` and throwaway `agent_history_test_*` databases, never against `~/.claude`, `~/.codex`, `~/.agent-history` or the `agent_history` database.
 
@@ -21,7 +21,6 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 
 ## Validation Commands
 - `npm test` (runs `node --test`; each run creates and drops its own test DB)
-- `npx tsc --noEmit`
 - `./bin/agent-history --help`
 - `npm run check:doctor` (creates a unique test DB, runs `doctor` against it, drops it; never the real DB)
 
@@ -33,17 +32,17 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] **(user)** If mirrored, verify per-tool file counts (`.jsonl` and `.jsonl.zst`) match source and `stat -f %Lp ~/.agent-history/raw` prints 700
 
 ### Task 2: Project skeleton, install, test DB harness
-- [ ] `package.json`: `"type": "module"`, `"engines": {"node": ">=22.18"}`, `bin: {"agent-history": "bin/agent-history"}`, runtime dependency `pg`, dev dependencies `typescript`, `@types/node`, `@types/pg`; `package-lock.json` committed
-- [ ] `tsconfig.json` for type checking only: `noEmit`, `strict`, `module`/`moduleResolution` `nodenext`, `allowImportingTsExtensions`, `erasableSyntaxOnly`, `verbatimModuleSyntax`
-- [ ] Source layout: `src/cli.ts`, `src/db.ts`, `src/migrations/*.sql`, `src/inventory.ts`, `src/redact.ts`, `src/ingest.ts`, `src/parsers/claude.ts`, `src/parsers/codex.ts`; imports use `.ts` extensions
-- [ ] `bin/agent-history`: `#!/usr/bin/env node` launcher importing `../src/cli.ts`; hooks and launchd call it as `"$NODE" /abs/repo/bin/agent-history …`, never through `PATH`
+- [ ] `package.json`: `"type": "module"`, `"engines": {"node": ">=22.15"}`, `bin: {"agent-history": "bin/agent-history"}`, runtime dependencies `knex` and `pg`, no dev dependencies; `"test": "node --test"`; `package-lock.json` committed
+- [ ] Source layout (plain JavaScript): `src/cli.js`, `src/db.js` (Knex factory, owner/reader connections), `src/inventory.js`, `src/redact.js`, `src/ingest.js`, `src/parsers/claude.js`, `src/parsers/codex.js`; `migrations/*.js` (Knex); `knexfile.js` resolving the same endpoint as `src/db.js`
+- [ ] `bin/agent-history`: `#!/usr/bin/env node` launcher importing `../src/cli.js`; hooks and launchd call it as `"$NODE" /abs/repo/bin/agent-history …`, never through `PATH`
 - [ ] CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor`, `setup` (stubs), parsed with `node:util` `parseArgs`
 - [ ] Install with `npm ci`; npm cache pinned to `tmp/npm-cache` via repo `.npmrc`; record the absolute `node` and `bin/agent-history` paths in the README for hooks and launchd
 - [ ] `.gitignore`: `node_modules/`, `tmp/`, `.peer-chats/`, `tests/private/`, `*.dump`, `.idea/`
-- [ ] Test harness `test/helpers/db.ts`: creates `agent_history_test_<pid>_<rand>` from `template0`, applies migrations, and after the run drops with `WITH (FORCE)` only the exact name it created successfully; never lists or drops other databases by prefix; never creates roles; skips with a clear message when the server is unreachable
+- [ ] Test harness `test/helpers/db.js`: through Knex on the `postgres` maintenance DB, creates `agent_history_test_<pid>_<rand>` from `template0` (`CREATE DATABASE ?? TEMPLATE template0`), applies Knex migrations, and after the run drops with `WITH (FORCE)` only the exact name it created successfully; never lists or drops other databases by prefix; never creates roles; skips with a clear message when the server is unreachable
 - [ ] `npm run check:doctor` script wrapping the harness for the validation command
 - [ ] CLI smoke test (`--help` exits 0 and lists all subcommands) so `node --test` never collects zero tests
-- [ ] Verify `"$NODE" bin/agent-history --help` runs from a fresh shell, `npm test` and `npx tsc --noEmit` pass, and no `agent_history_test_*` DB is left on the server afterwards
+- [ ] Every CLI path ends with `await knex.destroy()` (in `finally`), so no command hangs on an open pool; smoke-test that `--help` and a failed connection both exit
+- [ ] Verify `"$NODE" bin/agent-history --help` runs from a fresh shell, `npm test` passes, and no `agent_history_test_*` DB is left on the server afterwards
 
 ### Task 3: Source inventory and identity contract
 - [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
@@ -59,15 +58,15 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine (last Python run: Claude 371 root + 721 child + 2 skipped; Codex 126 plain + 687 zst active + 99 zst archived; 2002 sessions; numbers will have grown)
 
 ### Task 4: Schema, roles, diagnostics
-- [ ] Migration `001`: `CREATE EXTENSION IF NOT EXISTS pg_trgm`; `schema_migrations(version int primary key, applied_at timestamptz)`
+- [ ] Knex migration `001_init.js` (`up` and `down`): `knex.raw('CREATE EXTENSION IF NOT EXISTS pg_trgm')`, then the tables below with `knex.schema.createTable`; Knex tracks applied migrations in `knex_migrations`
 - [ ] `sessions` (id text pk, tool, native_id, parent_id, agent_id, is_sidechain bool, project, cwd, started_at timestamptz, ended_at timestamptz, title, source_path, cli_version)
 - [ ] `messages` (id bigint identity pk, session_id fk, record_id, block_ordinal, ts timestamptz, role, phase, kind, text, tool_name, files text[], provisional bool, raw text, source_path, source_line, content_hash, parser_version); unique `(session_id, record_id, block_ordinal)`
-- [ ] Search: `text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', left(coalesce(text, ''), 100000))) STORED` with a GIN index; `gin (text gin_trgm_ops)` (kept or dropped after the Task 9 size measurement); btree indexes on `messages (session_id, ts)`, `sessions (project, started_at)`, GIN on `files`
+- [ ] Search: `table.specificType('text_tsv', "tsvector GENERATED ALWAYS AS (to_tsvector('simple', left(coalesce(text, ''), 100000))) STORED")` with `table.index('text_tsv', 'messages_text_tsv_gin', { indexType: 'gin' })`; trigram index via `knex.schema.raw('CREATE INDEX … USING gin (text gin_trgm_ops)')` in its own migration so it can be dropped after the Task 9 size measurement; btree indexes on `messages (session_id, ts)`, `sessions (project, started_at)`, GIN on `files`
 - [ ] `sources` (path pk, session_id, encoding, content_hash, inode, size, byte_offset, last_line, prefix_fingerprint, generation bigint, status, updated_at) for coverage and checkpoints
 - [ ] `ingest_errors` (id, ts, source_path, line, error_class, detail without message text, resolved_at) and `unknown_types` (tool, type, subtype, count, primary key on the first three)
-- [ ] Migrations run in one transaction under `pg_advisory_xact_lock`; refuse a DB whose highest `schema_migrations.version` is newer than the code knows
+- [ ] `init` runs `knex.migrate.latest()` (Knex's lock table serialises concurrent runs); a DB listing a migration the code does not have is refused with Knex's "migration directory is corrupt" error, surfaced as a clear `init` / `doctor` message
 - [ ] Role setup SQL generated by code (applied only by `setup database`, Task 16): `agent_history_reader` `LOGIN`, `GRANT CONNECT`, `USAGE` on schema, `SELECT` on all tables plus default privileges, `ALTER ROLE … SET default_transaction_read_only = on`; idempotent (`DO` block checking `pg_roles`)
-- [ ] Add tests: `init` twice is idempotent; generated `text_tsv` finds inserted rows, reflects updated text, drops deleted rows; a 5 MB text block inserts without a `tsvector` size error and its first 100,000 chars are searchable; a unique token past char 100,000 is missed by full-text search and found by the project/date-filtered `ILIKE` fallback; trigram `ILIKE '%…%'` finds a path fragment; newer schema version is refused; the generated role SQL contains only `SELECT` grants and the read-only default
+- [ ] Add tests: `init` twice is idempotent; generated `text_tsv` finds inserted rows, reflects updated text, drops deleted rows; a 5 MB text block inserts without a `tsvector` size error and its first 100,000 chars are searchable; a unique token past char 100,000 is missed by full-text search and found by the project/date-filtered `ILIKE` fallback; trigram `ILIKE '%…%'` finds a path fragment; a DB with an unknown extra row in `knex_migrations` is refused; the generated role SQL contains only `SELECT` grants and the read-only default
 - [ ] Verify Postgres.app `psql` can run the pointer's example query (`websearch_to_tsquery`, `ts_headline`) on the test DB inside `SET TRANSACTION READ ONLY`; record the exact command for the Task 13 pointer
 - [ ] **(user)** After `setup database`, verify the reader role can `SELECT` and that `INSERT` fails
 
@@ -104,13 +103,13 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 
 ### Task 8: Incremental ingest with atomic checkpoints
 - [ ] Stream sources line by line; stop at the last newline-terminated line; tolerate a partial UTF-8 sequence at the end (track byte offsets on raw `Buffer`s, decode only complete lines)
-- [ ] Write rows in bounded batches (e.g. 500 lines) with multi-row `INSERT … ON CONFLICT (session_id, record_id, block_ordinal) DO UPDATE`; each batch commits rows and the `sources` checkpoint in one transaction
-- [ ] Each batch transaction: take `pg_advisory_xact_lock(hashtextextended(path, 0))`, then re-read the checkpoint row and re-validate the prefix fingerprint under the lock (parse work done before the lock is discarded if the generation moved); write rows; advance with `UPDATE sources SET …, generation = generation + 1 WHERE path = $1 AND generation = $expected`; zero rows updated rolls back the whole batch and restarts from the newer checkpoint. Resets for truncation or replacement also increment `generation`
+- [ ] Write rows in bounded batches (e.g. 500 lines) with `trx('messages').insert(rows).onConflict(['session_id', 'record_id', 'block_ordinal']).merge()`; each batch commits rows and the `sources` checkpoint in one `knex.transaction`
+- [ ] Each batch transaction: `trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [path])`, then re-read the checkpoint row and re-validate the prefix fingerprint under the lock (parse work done before the lock is discarded if the generation moved); write rows; advance with `trx('sources').where({ path, generation: expected }).update({ …, generation: trx.raw('generation + 1') })`; a returned count of 0 throws, which rolls back the whole batch, and the caller restarts from the newer checkpoint. Resets for truncation or replacement also increment `generation`
 - [ ] Detect truncation and replacement with a fingerprint of the already-checkpointed prefix (size, inode, hash of the last checkpointed bytes window), not a full-file hash; ordinary appends never replay the prefix; full-content hashes only identify immutable copies
 - [ ] Tests: an append does not reparse the prior prefix; a same-size rewrite is detected and replayed; a stale writer that parsed the old file cannot commit after another writer reset and replayed a replacement back to the same offset
-- [ ] Connect with `pg.Client({ connectionTimeoutMillis: 3000, statement_timeout: 30000, application_name: 'agent-history' })`
+- [ ] Connect with `knex({ client: 'pg', connection: { connectionString, connectionTimeoutMillis: 3000, statement_timeout: 30000, application_name: 'agent-history' }, pool: { min: 0, max: 1 }, acquireConnectionTimeout: 5000 })`
 - [ ] On serialization, deadlock or connection errors: bounded retries, then record in `ingest_errors` and leave the source `pending` for the next scan; if the DB is unreachable, append an id-only line to `~/.agent-history/ingest.log` (0600) and exit 0
-- [ ] `ingest` reads hook stdin JSON as untrusted data (`session_id`, `transcript_path`, `agent_transcript_path`, `cwd`, `turn_id`, `last_assistant_message`); paths must sit under a known root; all SQL uses parameters, never string interpolation
+- [ ] `ingest` reads hook stdin JSON as untrusted data (`session_id`, `transcript_path`, `agent_transcript_path`, `cwd`, `turn_id`, `last_assistant_message`); paths must sit under a known root; all SQL goes through the Knex builder or `raw` with `?` / `??` bindings, never string interpolation
 - [ ] Store `last_assistant_message` as a provisional row; replace it when the matching transcript record arrives (Codex by `turn_id`, Claude by last assistant reply after the turn's prompt); two identical real answers both survive
 - [ ] Tests with exact expected rows and checkpoints: chunked vs one-shot ingest; repeated ingest; crash between batches; 2 ingesters on the same file while it grows; partial line and partial UTF-8; transcript delayed then arriving; duplicate hook calls; plain file later replaced by its `.zst` copy; truncated and replaced file; 10 concurrent writers on different sessions; server unreachable (refused port) and a TCP listener that never completes the handshake both exit 0 within 5 s and log
 - [ ] Persistence check: ingest the Task 5 seeded fixture; no seeded secret appears in `messages` (text and `raw`), `sessions`, `text_tsv` lexemes or the log
@@ -173,8 +172,8 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 
 ### Task 15: Backups, maintenance and retention
 - [ ] `agent-history backup`: `"$PGBIN/pg_dump" -Fc --dbname=<resolved URL>` to a temp file in `~/.agent-history/backups/`, renamed to `<date>.dump` (0600) on success; only then rotate to the last 8; credentials never logged
-- [ ] `agent-history restore <dump>`: create an empty DB from `template0`, require roles to exist (provisioned by `setup database --roles-only`), `pg_restore --exit-on-error --single-transaction`, apply only migrations newer than the dump, run `doctor`
-- [ ] Test on test DBs: dump, restore by that exact sequence into another `agent_history_test_*` DB, row counts and a full-text query match, no duplicate `schema_migrations` rows; no seeded secret appears in the restored rows or in `pg_restore -f -` SQL output
+- [ ] `agent-history restore <dump>`: create an empty DB from `template0`, require roles to exist (provisioned by `setup database --roles-only`), `pg_restore --exit-on-error --single-transaction`, then `knex.migrate.latest()` applies only migrations newer than the dump, run `doctor`
+- [ ] Test on test DBs: dump, restore by that exact sequence into another `agent_history_test_*` DB, row counts and a full-text query match, no duplicate `knex_migrations` rows; no seeded secret appears in the restored rows or in `pg_restore -f -` SQL output
 - [ ] **(user)** Allow Postgres.app's `pg_dump` and `psql` in the permission dialog once, interactively
 - [ ] **(user)** Add a weekly launchd job running `backup`
 - [ ] Test that search still works after deleting an ingested disposable fixture source
@@ -200,8 +199,9 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 | Touch global config during implementation? | No; prepare `setup` commands and a runbook | User is away until tomorrow and will run them | user |
 | Live agent runs and recall questions | Left to the user, with scripts | They spend quota and need the user's memory | user |
 | Stack | Node.js + PostgreSQL in Postgres.app on this Mac | Replaces Python + SQLite | user |
+| Code and DB layer | Plain JavaScript (no TypeScript); Knex for queries and migrations over `pg` | User request; Knex import ~37 ms, fine for async hooks | user |
 | Install location | Repo-local `node_modules` via `npm ci`, npm cache in `tmp/npm-cache`; hooks use absolute `node` and `bin/agent-history` paths | Repo-only scope; `PATH` and nvm defaults can change | default |
 | Server objects during implementation | Only the exact throwaway `agent_history_test_*` databases each run created; no roles; the real DB and reader role come from `setup database` | Shared server with ~50 other databases; roles are cluster-wide | user |
-| Corrections from Codex review of the Node/Postgres docs | Node ≥ 22.18; no role creation in tests; restore into an empty DB before migrations; `connectionTimeoutMillis`; generation-based checkpoint CAS; capped `tsvector` input; one resolved endpoint for all clients; trial DB lifetime; redrawn diagram | Verified against Node, node-postgres and PostgreSQL docs | peer |
+| Corrections from Codex review of the Node/Postgres docs | Node minimum (now 22.15 again: no type stripping needed with plain JS); no role creation in tests; restore into an empty DB before migrations; `connectionTimeoutMillis`; generation-based checkpoint CAS; capped `tsvector` input; one resolved endpoint for all clients; trial DB lifetime; redrawn diagram | Verified against Node, node-postgres and PostgreSQL docs | peer |
 | Plan corrections from Codex review of `ef2d173` | Block-level row keys, prefix fingerprint instead of full hash, batch rollback on CAS failure, isolated validation DB, synthetic hook tests, explicit doctor health rules | Verified against the plan text and real data | peer |
 | Where setup logic lives | `agent-history setup …` subcommands instead of loose shell scripts | Testable on temp homes, dry-run by default | default |

@@ -1,11 +1,7 @@
-*.db
-*.db-wal
-*.db-shm
-*.db-journal
+node_modules/
 tmp/
-__pycache__/
-.venv/
 .peer-chats/
 tests/private/
+test/private/
+*.dump
 .idea/
-.pytest_cache/

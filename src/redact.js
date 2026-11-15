@@ -15,7 +15,7 @@ const PATTERNS = [
 const SECRET_NAME = '(?=[A-Z])[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)S?';
 const ENV_VALUE = `"(?:[^"\\\\\\n]|\\\\.)*"|'[^'\\n]*'|\\{\\{[^{}\\n]{1,80}\\}\\}|[^\\s"'#][^\\s#]*`;
 const ENV_ASSIGN = new RegExp(
-  `^(?<lead>[ \\t]*(?:export[ \\t]+)?(?<name>${SECRET_NAME})[ \\t]*[=:][ \\t]*)(?<value>${ENV_VALUE})`,
+  `^(?<lead>[+-]?[ \\t]*(?:export[ \\t]+)?(?<name>${SECRET_NAME})[ \\t]*[=:][ \\t]*)(?<value>${ENV_VALUE})`,
   'gm',
 );
 const METRIC_NAME =

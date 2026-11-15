@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { recordId } from '../inventory.js';
 import { bounded, redactText, sanitize, sanitizeLine } from '../redact.js';
 import { projectFromCwd } from './claude.js';
-import { cleanBounded, cleanText, safeDate } from './common.js';
+import { cleanBounded, cleanText, restoreSession, safeDate, snapshotSession } from './common.js';
 
 export const PARSER_VERSION = 1;
 export const TOOL_TEXT_LIMIT = 500;
@@ -18,8 +18,12 @@ const SKIPPED_RESPONSE = new Set(['reasoning', 'compaction', 'additional_tools',
 const NOISE_TYPES = new Set([
   'event_msg', 'token_usage_record', 'world_state', 'inter_agent_communication_metadata', 'state',
 ]);
-const TRANSCRIPT_COPY = /^The following is the Codex agent history\b/;
-const INJECTED_BLOCK = /^\s*(?:<[a-z_]+>|# AGENTS\.md|# Files\b)/;
+const INJECTED_TAGS = [
+  'environment_context', 'guardian_tool_descriptions', 'recommended_plugins', 'external_codex_apps_open_page',
+  'goal_context', 'skill', 'user_instructions', 'turn_aborted', 'heartbeat',
+].join('|');
+const INJECTED_BLOCK = new RegExp(`^\\s*(?:<(${INJECTED_TAGS})>[\\s\\S]*</\\1>\\s*$|# AGENTS\\.md instructions for )`);
+const NOTIFICATION_BLOCK = /^\s*<subagent_notification>[\s\S]*<\/subagent_notification>\s*$/;
 const PATCH_FILE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm;
 const FILE_KEYS = ['path', 'file_path', 'filePath'];
 
@@ -54,7 +58,7 @@ function filesFrom(input) {
   return [...out].map(redactText);
 }
 
-export function createCodexParser(source) {
+export function createCodexParser(source, state = null) {
   const toolNames = new Map();
   const unknown = new Map();
   const skipped = new Map();
@@ -74,11 +78,13 @@ export function createCodexParser(source) {
     source_path: source.path,
     cli_version: null,
   };
-  let ownId = source.nativeId;
-  let historyStart = 0;
-  let replaying = false;
-  let turnId = null;
-  let firstPrompt = null;
+  let ownId = state?.ownId ?? source.nativeId;
+  let historyStart = state?.historyStart ?? 0;
+  let replaying = state?.replaying ?? false;
+  let turnId = state?.turnId ?? null;
+  let firstPrompt = state?.firstPrompt ?? null;
+  let guardian = state?.guardian ?? false;
+  restoreSession(session, state?.session);
 
   const count = (map, key) => map.set(key, (map.get(key) || 0) + 1);
 
@@ -105,6 +111,7 @@ export function createCodexParser(source) {
     if (meta.parent_thread_id) {
       session.is_sidechain = true;
       const kind = meta.source?.subagent?.other;
+      guardian = kind === 'guardian';
       session.agent_id = redactText(String(meta.agent_nickname ?? (typeof kind === 'string' ? kind : null) ?? ownId));
     }
     if (Number.isInteger(meta.subagent_history_start_ordinal)) historyStart = meta.subagent_history_start_ordinal;
@@ -188,13 +195,15 @@ export function createCodexParser(source) {
       const t = p?.type;
       if (t === 'message') {
         const blocks = Array.isArray(p.content) ? p.content : [];
-        if (p.role === 'user' && TRANSCRIPT_COPY.test(blocks[0]?.text ?? '')) {
-          count(skipped, 'user/transcript-copy');
+        if (p.role === 'user' && guardian) {
+          count(skipped, 'user/guardian-input');
         } else if (p.role === 'user') {
           blocks.forEach((b, i) => {
             if (b?.type === 'input_text') {
               if (INJECTED_BLOCK.test(b.text ?? '')) count(skipped, 'user/injected');
-              else {
+              else if (NOTIFICATION_BLOCK.test(b.text ?? '')) {
+                push(i, { role: 'system', kind: 'notification', text: cleanText(b.text) });
+              } else {
                 const text = cleanText(b.text ?? '');
                 if (!firstPrompt && text.trim()) firstPrompt = text;
                 push(i, { role: 'user', kind: 'prompt', text });
@@ -259,5 +268,9 @@ export function createCodexParser(source) {
     return session;
   }
 
-  return { parseLine, finish, unknown, skipped };
+  function snapshot() {
+    return { ownId, historyStart, replaying, turnId, firstPrompt, guardian, session: snapshotSession(session) };
+  }
+
+  return { parseLine, finish, snapshot, unknown, skipped };
 }

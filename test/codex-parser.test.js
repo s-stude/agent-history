@@ -98,7 +98,7 @@ test('guardian child: linked to parent, transcript copy skipped, verdict kept', 
   assert.equal(session.parent_id, `codex:${MAIN}`);
   assert.equal(session.is_sidechain, true);
   assert.equal(session.agent_id, 'guardian');
-  assert.equal(skipped.get('user/transcript-copy'), 1);
+  assert.equal(skipped.get('user/guardian-input'), 1);
   assert.deepEqual(rows.map((r) => [r.role, r.kind]), [['assistant', 'text']]);
 });
 
@@ -152,4 +152,57 @@ test('JSON-shaped prompt and answer text are sanitized structurally', async (t) 
     assert.equal(r.ts, null);
   }
   assert.equal(parser.unknown.get('invalid-timestamp'), 3);
+});
+
+function rootParser(source) {
+  const parser = createCodexParser(source(MAIN));
+  parser.parseLine(JSON.stringify({ type: 'session_meta', payload: { id: MAIN, cwd: '/w/demo' } }), 1);
+  return parser;
+}
+
+const userMsg = (text) => JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+
+test('patch lines that add or remove credentials are redacted in text and raw', async (t) => {
+  const source = await setup(t);
+  const parser = rootParser(source);
+  for (const [i, sign] of [['+', 2], ['-', 3]].map(([s, n]) => [n, s])) {
+    const input = `*** Begin Patch\n*** Update File: .env\n${sign}DB_PASSWORD=synthetic-secret-123\n${sign}export API_TOKEN="two words secret"\n*** End Patch`;
+    const [row] = parser.parseLine(JSON.stringify({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: `c${i}`, input } }), i);
+    for (const field of [row.text, row.raw]) {
+      assert.ok(!field.includes('synthetic-secret-123'), sign);
+      assert.ok(!field.includes('two words secret'), sign);
+    }
+    assert.ok(row.text.includes(`${sign}DB_PASSWORD=[REDACTED:env]`), sign);
+  }
+});
+
+test('only known injected blocks are skipped; ordinary tags and headings stay prompts', async (t) => {
+  const source = await setup(t);
+  const parser = rootParser(source);
+  const keep = [
+    '<html>\nFix this page for mobile.\n</html>',
+    '# Files to update\nPlease change src/a.js.',
+    '# Files mentioned by the user:\n\n## a.js: /x/a.js\n\n## My request for Codex:\nRefactor a.js',
+    'The following is the Codex agent history. Please summarize it.',
+    '<environment_context>unclosed and then a real question',
+  ];
+  const drop = ['<environment_context>\n<cwd>/x</cwd>\n</environment_context>', '# AGENTS.md instructions for /x\n\nrules', '<skill>\nname\n</skill>'];
+  let n = 2;
+  for (const text of keep) {
+    const rows = parser.parseLine(userMsg(text), n++);
+    assert.deepEqual(rows.map((r) => r.kind), ['prompt'], text);
+  }
+  for (const text of drop) assert.deepEqual(parser.parseLine(userMsg(text), n++), [], text);
+  const [note] = parser.parseLine(userMsg('<subagent_notification>\n{"done":true}\n</subagent_notification>'), n++);
+  assert.deepEqual([note.role, note.kind], ['system', 'notification']);
+  assert.equal(parser.skipped.get('user/injected'), 3);
+});
+
+test('guardian state survives a snapshot and restore', async (t) => {
+  const source = await setup(t);
+  const first = createCodexParser(source(GUARDIAN));
+  first.parseLine(JSON.stringify({ type: 'session_meta', payload: { id: GUARDIAN, parent_thread_id: MAIN, source: { subagent: { other: 'guardian' } } } }), 1);
+  const resumed = createCodexParser(source(GUARDIAN), JSON.parse(JSON.stringify(first.snapshot())));
+  assert.deepEqual(resumed.parseLine(userMsg('[1] user: anything'), 2), []);
+  assert.equal(resumed.skipped.get('user/guardian-input'), 1);
 });

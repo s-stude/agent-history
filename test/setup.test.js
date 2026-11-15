@@ -231,3 +231,25 @@ test('the installed hook command finds a custom history home from a cleared envi
   assert.match(stdout, /^claude\tplain\tactive\troot\t1$/m);
   assert.match(stdout, /^sessions\t1$/m);
 });
+
+test('an explicit --home ignores ambient root and native-home variables', async (t) => {
+  const h = await tmpDir(t);
+  const env = {
+    AGENT_HISTORY_CLAUDE_PROJECTS: '/custom/claude',
+    AGENT_HISTORY_CODEX_SESSIONS: '/custom/sessions',
+    AGENT_HISTORY_CODEX_ARCHIVED: '/custom/archive',
+    CLAUDE_CONFIG_DIR: '/real/claude',
+    CODEX_HOME: '/real/codex',
+    AGENT_HISTORY_HOME: '/real/history',
+  };
+  const L = layout({ home: h, env });
+  for (const key of ['claudeProjects', 'codexSessions', 'codexArchived', 'historyHome', 'claudeSettings', 'codexHooks']) {
+    assert.ok(L[key].startsWith(`${h}/`), `${key}: ${L[key]}`);
+  }
+  await setup('hooks', { home: h, env, apply: true, node: '/n', url: 'postgresql://localhost/agent_history', log: () => {} });
+  const saved = JSON.parse(await readFile(path.join(h, '.agent-history', 'config.json'), 'utf8')).roots;
+  for (const v of Object.values(saved)) assert.ok(v.startsWith(`${h}/`), v);
+  const logs = [];
+  await setup('mirror', { home: h, env, log: (l) => logs.push(l) });
+  assert.ok(logs.every((l) => !l.includes('/custom/')), logs.join('\n'));
+});

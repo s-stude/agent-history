@@ -27,10 +27,11 @@ export function layout({ home, env = process.env } = {}) {
   const codex = !explicit && env.CODEX_HOME ? env.CODEX_HOME : path.join(base, '.codex');
   const history = explicit ? path.join(base, '.agent-history') : resolveHistoryHome(env);
   const saved = loadConfig({ AGENT_HISTORY_HOME: history }).roots ?? {};
+  const ambient = explicit ? {} : env;
   const roots = {
-    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS || saved.claudeProjects || path.join(claude, 'projects'),
-    codexSessions: env.AGENT_HISTORY_CODEX_SESSIONS || saved.codexSessions || path.join(codex, 'sessions'),
-    codexArchived: env.AGENT_HISTORY_CODEX_ARCHIVED || saved.codexArchived || path.join(codex, 'archived_sessions'),
+    claudeProjects: ambient.AGENT_HISTORY_CLAUDE_PROJECTS || saved.claudeProjects || path.join(claude, 'projects'),
+    codexSessions: ambient.AGENT_HISTORY_CODEX_SESSIONS || saved.codexSessions || path.join(codex, 'sessions'),
+    codexArchived: ambient.AGENT_HISTORY_CODEX_ARCHIVED || saved.codexArchived || path.join(codex, 'archived_sessions'),
   };
   return {
     home: base,

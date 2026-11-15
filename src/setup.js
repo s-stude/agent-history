@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { constants } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -8,13 +9,14 @@ import { databaseUrl, normalizeUrl, openDb } from './db.js';
 import { migrateWithLock } from './migrate.js';
 import { pointerText, POINTER_END, POINTER_START } from './pointer.js';
 import { readerRoleSql } from './roles.js';
+import { shellQuote } from './shell.js';
 
 const run = promisify(execFile);
 export const HEAP_FLAG = '--max-old-space-size=192';
 export const BIN = fileURLToPath(new URL('../bin/agent-history', import.meta.url));
 export const SCAN_LABEL = 'com.agent-history.scan';
 export const BACKUP_LABEL = 'com.agent-history.backup';
-const MARK = 'agent-history';
+export const MANAGED = '# agent-history:managed';
 
 export function layout({ home = homedir(), env = process.env } = {}) {
   const claude = env.CLAUDE_CONFIG_DIR && home === homedir() ? env.CLAUDE_CONFIG_DIR : path.join(home, '.claude');
@@ -33,10 +35,8 @@ export function layout({ home = homedir(), env = process.env } = {}) {
   };
 }
 
-const q = (s) => `"${s.replaceAll('"', '\\"')}"`;
-
 export function commandLine(args, node = process.execPath) {
-  return [q(node), HEAP_FLAG, q(BIN), ...args].join(' ');
+  return [node, HEAP_FLAG, BIN, ...args].map(shellQuote).join(' ');
 }
 
 async function readJson(file) {
@@ -61,35 +61,50 @@ function stamp(now = new Date()) {
   return now.toISOString().replace(/\.\d+Z$/, 'Z').replaceAll(':', '-');
 }
 
+async function exclusiveBackup(file, now) {
+  for (let n = 0; ; n++) {
+    const backup = `${file}.bak-${stamp(now)}${n ? `-${n}` : ''}`;
+    try {
+      await copyFile(file, backup, constants.COPYFILE_EXCL);
+      await chmod(backup, 0o600);
+      return backup;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+}
+
 export async function writeWithBackup(file, content, { mode = 0o600, now = new Date() } = {}) {
   const old = await readText(file);
   if (old === content) return { file, changed: false, backup: null };
   await mkdir(path.dirname(file), { recursive: true });
-  let backup = null;
-  if (old !== null) {
-    backup = `${file}.bak-${stamp(now)}`;
-    await copyFile(file, backup);
-    await chmod(backup, 0o600);
-  }
+  const backup = old !== null ? await exclusiveBackup(file, now) : null;
   await writeFile(file, content, { mode });
   return { file, changed: true, backup };
 }
 
 function hookEntry(command) {
-  return { hooks: [{ type: 'command', command, async: true }] };
+  return { hooks: [{ type: 'command', command: `${command} ${MANAGED}`, async: true }] };
 }
 
-function isOurs(group) {
-  return Array.isArray(group?.hooks) && group.hooks.some((h) => typeof h.command === 'string' && h.command.includes(BIN) && h.command.includes(MARK));
-}
+const isManaged = (h) => typeof h?.command === 'string' && h.command.trimEnd().endsWith(MANAGED);
 
 export function mergeHooks(config, events, node) {
   const out = structuredClone(config ?? {});
   out.hooks ??= {};
   for (const [event, args] of Object.entries(events)) {
-    const list = Array.isArray(out.hooks[event]) ? out.hooks[event].filter((g) => !isOurs(g)) : [];
-    list.push(hookEntry(commandLine(args, node)));
-    out.hooks[event] = list;
+    const groups = Array.isArray(out.hooks[event]) ? out.hooks[event] : [];
+    const kept = [];
+    for (const group of groups) {
+      if (!Array.isArray(group?.hooks)) {
+        kept.push(group);
+        continue;
+      }
+      const handlers = group.hooks.filter((h) => !isManaged(h));
+      if (handlers.length) kept.push({ ...group, hooks: handlers });
+    }
+    kept.push(hookEntry(commandLine(args, node)));
+    out.hooks[event] = kept;
   }
   return out;
 }
@@ -117,6 +132,11 @@ ${schedule}
   <string>${escapeXml(path.join(historyHome, `${label}.out.log`))}</string>
   <key>StandardErrorPath</key>
   <string>${escapeXml(path.join(historyHome, `${label}.err.log`))}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENT_HISTORY_HOME</key>
+    <string>${escapeXml(historyHome)}</string>
+  </dict>
   <key>Umask</key>
   <integer>63</integer>
 </dict>
@@ -137,6 +157,18 @@ export function replacePointer(existing, block) {
   }
   const sep = !text ? '' : text.endsWith('\n\n') ? '' : text.endsWith('\n') ? '\n' : '\n\n';
   return `${text}${sep}${block}`;
+}
+
+function runtimeConfig(L, { node, url }) {
+  const endpoint = new URL(normalizeUrl(url));
+  endpoint.password = '';
+  return {
+    node,
+    bin: BIN,
+    heap: HEAP_FLAG,
+    url: endpoint.toString(),
+    roots: { claudeProjects: L.claudeProjects, codexSessions: L.codexSessions, codexArchived: L.codexArchived },
+  };
 }
 
 async function readConfig(L) {
@@ -197,10 +229,11 @@ export async function setup(what, { apply = false, home, env = process.env, node
     }
     if (what === 'hooks') log('next: in Codex run /hooks and trust the new hooks');
     if (what === 'launchd') {
-      for (const label of [SCAN_LABEL, BACKUP_LABEL]) log(`next: launchctl bootstrap gui/$(id -u) ${q(path.join(L.launchAgents, `${label}.plist`))}`);
+      for (const label of [SCAN_LABEL, BACKUP_LABEL]) log(`next: launchctl bootstrap gui/$(id -u) ${shellQuote(path.join(L.launchAgents, `${label}.plist`))}`);
     }
     if (what === 'hooks' || what === 'launchd') {
-      if (apply) await writeConfig(L, { node, bin: BIN, heap: HEAP_FLAG });
+      if (apply) await writeConfig(L, runtimeConfig(L, { node, url }));
+      else log(`would record\t${path.join(L.historyHome, 'config.json')} (endpoint without password, transcript roots, node path)`);
     }
     return;
   }
@@ -211,7 +244,7 @@ export async function setup(what, { apply = false, home, env = process.env, node
   }
   if (what === 'mirror') {
     for (const [cmd, args] of mirrorCommands(L)) {
-      if (!apply) log(`would run\t${cmd} ${args.map(q).join(' ')}`);
+      if (!apply) log(`would run\t${cmd} ${args.map(shellQuote).join(' ')}`);
       else {
         await mkdir(args.at(-1), { recursive: true, mode: 0o700 });
         await run(cmd, args);
@@ -255,8 +288,7 @@ async function setupDatabase(L, { apply, url, rolesOnly, node, log }) {
     await db.destroy();
   }
   if (!rolesOnly) {
-    target.password = '';
-    await writeConfig(L, { node, bin: BIN, heap: HEAP_FLAG, url: target.toString() });
+    await writeConfig(L, runtimeConfig(L, { node, url: target.toString() }));
     log(`wrote\t${path.join(L.historyHome, 'config.json')}`);
   }
 }

@@ -13,6 +13,8 @@ PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest/bin"
 
 Postgres.app 18 must be running (it starts at login). `cd "$REPO" && npm ci` once.
 
+Where the CLI finds its settings: environment variables first (`AGENT_HISTORY_DATABASE_URL`, `AGENT_HISTORY_*` roots), then `~/.agent-history/config.json` (written by `setup database|hooks|launchd`: endpoint without password, transcript roots, node path), then defaults. launchd jobs get `AGENT_HISTORY_HOME` in their plist so they read the same config. If your endpoint needs a password, put it in `~/.pgpass` (0600), never in the config.
+
 ## 1. Stop Claude Code from deleting old transcripts (Task 1) — do this first
 
 ```sh
@@ -83,17 +85,17 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.backup
   CODEX_HOME=/tmp/codex-probe codex exec "say hi"; cat /tmp/codex-probe/payload.jsonl
   ```
   Check that `session_id`, `transcript_path`, `turn_id` and `last_assistant_message` are present (or note which are null), and that the `hooks.json` shape above is the one Codex 0.163 reads.
-- Check capture (each spends one model call):
+- Check capture in a real interactive session (one-shot `claude -p` / `codex exec` cancel unfinished async hooks at exit, so they cannot prove capture):
   ```sh
-  "$REPO/scripts/capture-check.sh" claude
-  "$REPO/scripts/capture-check.sh" codex
+  "$REPO/scripts/capture-check.sh" claude   # prints a prompt with a random word; send it in an interactive claude session
+  "$REPO/scripts/capture-check.sh" codex    # same for codex
   ```
-  Each must print `PASS` within 60 s.
+  Each must print `PASS: captured in <session id>`: a final, non-provisional answer equal to the word, in a session updated after the script started.
 - Check subagents: run one subagent task in each tool, then
   `"$PGBIN/psql" -d agent_history -c "SELECT id, parent_id, agent_id FROM sessions WHERE parent_id IS NOT NULL ORDER BY updated_at DESC LIMIT 5"`.
 - Check recovery: kill a session mid-turn; exit right after a turn; and run one turn with Postgres.app stopped (then start it). Within 15 minutes of the server being back, `AH doctor` exits 0 and all three turns are in the DB.
 - Check the launchd job connects without a permission prompt: after its first run, `~/.agent-history/com.agent-history.scan.err.log` is empty and `AH doctor` shows no `log_after_last_ingest` warning. If Postgres.app denied it, open Postgres.app → Settings → App Permissions and allow `$NODE`.
-- Overhead: `"$REPO/scripts/overhead.sh" <some transcript.jsonl> 10` times the hook command; add `--e2e` to compare `claude -p` with hooks on vs off (spends 20 model calls). Budget: under 50 ms foreground difference.
+- Overhead: `"$REPO/scripts/overhead.sh" <some transcript.jsonl> 10` reports (1) dispatch: background fork/exec of the hook command and return, compared with the 50 ms budget; (2) worker latency: the full run, which happens in the background. `--e2e` adds `claude -p` medians with hooks on vs off as an observation only (spends 20 model calls; model/network noise dominates). Dry run on this Mac: dispatch ~5 ms, worker ~90 ms.
 - Undo: restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`; `launchctl bootout gui/$(id -u)/com.agent-history.scan` (and `.backup`), then delete the two plists.
 
 ## 5. Tell the agents where history lives (Task 13)

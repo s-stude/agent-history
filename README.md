@@ -31,7 +31,7 @@ Turning it on for real is a sequence of user steps: see [docs/RUNBOOK.md](docs/R
 
 ## Configuration
 
-- `AGENT_HISTORY_DATABASE_URL`: database endpoint, default `postgresql://localhost:5432/agent_history`.
+- `AGENT_HISTORY_DATABASE_URL`: database endpoint; else `url` in `~/.agent-history/config.json` (written by `setup`); else `postgresql://localhost:5432/agent_history`. Passwords belong in `~/.pgpass`, not in the URL or config.
 - `AGENT_HISTORY_HOME`: logs, config, exports and backups, default `~/.agent-history`.
 - `AGENT_HISTORY_CLAUDE_PROJECTS`, `AGENT_HISTORY_CODEX_SESSIONS`, `AGENT_HISTORY_CODEX_ARCHIVED`: transcript roots (defaults under `CLAUDE_CONFIG_DIR` / `CODEX_HOME`).
 - `AGENT_HISTORY_TEST_SERVER_URL`: maintenance DB used by tests to create and drop test databases, default: the endpoint above with database `postgres`.

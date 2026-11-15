@@ -1,11 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import knexFactory from 'knex';
+import { loadConfig } from './config.js';
 
 export const DEFAULT_DATABASE_URL = 'postgresql://localhost:5432/agent_history';
 export const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations/', import.meta.url));
 
 export function databaseUrl(env = process.env) {
-  return env.AGENT_HISTORY_DATABASE_URL || DEFAULT_DATABASE_URL;
+  return env.AGENT_HISTORY_DATABASE_URL || loadConfig(env).url || DEFAULT_DATABASE_URL;
 }
 
 const KEPT_PARAMS = new Set(['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'host', 'port']);

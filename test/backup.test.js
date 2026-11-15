@@ -7,7 +7,7 @@ import path from 'node:path';
 import { useTestDb, serverUrl, testDbName } from './helpers/db.js';
 import { tmpDir } from './helpers/tmp.js';
 import { openDb } from '../src/db.js';
-import { backup, restore, PG_BIN } from '../src/backup.js';
+import { backup, grantsToRole, restore, PG_BIN } from '../src/backup.js';
 import { migrationFiles } from '../src/schema.js';
 import * as S from './fixtures/secrets.js';
 
@@ -83,4 +83,47 @@ test('restore frees a stale migration lock in the fresh copy and refuses existin
   await assert.rejects(restore(file, { serverUrl: serverUrl(), database: name }), /already exists/);
   const [{ is_locked }] = await h.db('knex_migrations_lock');
   assert.equal(is_locked, 1, 'the source DB lock is never touched');
+});
+
+test('the reader-role preflight reads grant recipients from schema SQL', () => {
+  assert.equal(grantsToRole('GRANT SELECT ON TABLE public.messages TO agent_history_reader;'), true);
+  assert.equal(grantsToRole('ALTER DEFAULT PRIVILEGES FOR ROLE me IN SCHEMA public GRANT SELECT ON TABLES TO "agent_history_reader";'), true);
+  assert.equal(grantsToRole('GRANT CONNECT ON DATABASE agent_history TO agent_history_reader;'), true);
+  assert.equal(grantsToRole('3500; 0 0 ACL public TABLE messages owner'), false);
+  assert.equal(grantsToRole('GRANT SELECT ON TABLE public.messages TO agent_history_readers;'), false);
+  assert.equal(grantsToRole('-- GRANT SELECT TO agent_history_reader'), false);
+});
+
+test('overlapping backups produce distinct dumps; a failing one removes only its own temp', async (t) => {
+  const h = await useTestDb(t);
+  if (!h) return;
+  const dir = await tmpDir(t);
+  const now = new Date('2026-11-16T00:00:00Z');
+  const [a, b] = await Promise.all([backup(h.url, dir, { now }), backup(h.url, dir, { now })]);
+  assert.notEqual(a.file, b.file);
+  const slow = backup(h.url, dir, { now });
+  await assert.rejects(backup('postgresql://localhost:1/agent_history_test_none', dir, { now }), /pg_dump failed/);
+  await slow;
+  const names = await readdir(dir);
+  assert.equal(names.filter((n) => n.endsWith('.dump')).length, 3);
+  assert.equal(names.filter((n) => n.includes('.partial')).length, 0);
+});
+
+test('a failed pg_restore removes the database it created, so a retry is possible', async (t) => {
+  const dir = await tmpDir(t);
+  const bad = path.join(dir, 'bad.dump');
+  const h = await useTestDb(t);
+  if (!h) return;
+  const { file } = await backup(h.url, dir);
+  const bytes = await (await import('node:fs/promises')).readFile(file);
+  await writeFile(bad, bytes.subarray(0, Math.floor(bytes.length * 0.6)));
+  const name = testDbName('restore');
+  dropAfter(t, name);
+  await assert.rejects(restore(bad, { serverUrl: serverUrl(), database: name }), /removed|pg_restore/);
+  const admin = openDb(serverUrl());
+  try {
+    assert.equal(await admin('pg_database').where({ datname: name }).first(), undefined);
+  } finally {
+    await admin.destroy();
+  }
 });

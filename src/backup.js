@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -9,17 +10,17 @@ import { READER_ROLE } from './roles.js';
 const run = promisify(execFile);
 export const PG_BIN = '/Applications/Postgres 18.app/Contents/Versions/latest/bin';
 export const KEEP_BACKUPS = 8;
-const DUMP_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.dump$/;
+const DUMP_NAME = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:\.\d{3})?Z(?:-[0-9a-f]{8})?\.dump$/;
 
 function stamp(now = new Date()) {
-  return now.toISOString().replace(/\.\d+Z$/, 'Z').replaceAll(':', '-');
+  return now.toISOString().replaceAll(':', '-');
 }
 
 export async function backup(url, dir, { now = new Date(), keep = KEEP_BACKUPS, pgBin = PG_BIN } = {}) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
-  const final = path.join(dir, `${stamp(now)}.dump`);
-  const tmp = `${final}.partial`;
+  const final = path.join(dir, `${stamp(now)}-${randomBytes(4).toString('hex')}.dump`);
+  const tmp = `${final}.${process.pid}.partial`;
   try {
     await run(path.join(pgBin, 'pg_dump'), ['-Fc', `--dbname=${normalizeUrl(url)}`, '-f', tmp]);
     await chmod(tmp, 0o600);
@@ -37,6 +38,11 @@ export async function backup(url, dir, { now = new Date(), keep = KEEP_BACKUPS, 
   return { file: final, removed };
 }
 
+export function grantsToRole(schemaSql, role = READER_ROLE) {
+  const ident = new RegExp(`\\bTO\\s+(?:"${role}"|${role})(?=[\\s;,]|$)`, 'i');
+  return schemaSql.split('\n').some((line) => /^\s*(GRANT|ALTER DEFAULT PRIVILEGES)\b/i.test(line) && ident.test(line));
+}
+
 function withDatabase(url, database) {
   const u = new URL(normalizeUrl(url));
   u.pathname = `/${database}`;
@@ -49,8 +55,8 @@ export async function restore(dumpFile, { serverUrl, database, pgBin = PG_BIN })
   try {
     const exists = await admin('pg_database').where({ datname: database }).first();
     if (exists) throw new Error(`database ${database} already exists; restore only into a new database`);
-    const { stdout: toc } = await run(path.join(pgBin, 'pg_restore'), ['-l', dumpFile], { maxBuffer: 64 * 1024 * 1024 });
-    if (toc.includes(READER_ROLE) && !(await admin('pg_roles').where({ rolname: READER_ROLE }).first())) {
+    const { stdout: schemaSql } = await run(path.join(pgBin, 'pg_restore'), ['--schema-only', '-f', '-', dumpFile], { maxBuffer: 64 * 1024 * 1024 });
+    if (grantsToRole(schemaSql) && !(await admin('pg_roles').where({ rolname: READER_ROLE }).first())) {
       throw new Error(`dump grants to ${READER_ROLE}, which does not exist here; run: agent-history setup database --roles-only --apply`);
     }
     await admin.raw('CREATE DATABASE ?? TEMPLATE template0', [database]);
@@ -58,7 +64,17 @@ export async function restore(dumpFile, { serverUrl, database, pgBin = PG_BIN })
     await admin.destroy();
   }
   const target = withDatabase(serverUrl, database);
-  await run(path.join(pgBin, 'pg_restore'), ['--exit-on-error', '--single-transaction', `--dbname=${target}`, dumpFile]);
+  try {
+    await run(path.join(pgBin, 'pg_restore'), ['--exit-on-error', '--single-transaction', `--dbname=${target}`, dumpFile]);
+  } catch (err) {
+    const cleanup = openDb(withDatabase(serverUrl, 'postgres'));
+    try {
+      await cleanup.raw('DROP DATABASE IF EXISTS ?? WITH (FORCE)', [database]);
+    } finally {
+      await cleanup.destroy();
+    }
+    throw new Error(`pg_restore failed (${err.code ?? 'error'}); the new database ${database} was removed`);
+  }
   const db = openDb(target);
   let freedLock = false;
   try {

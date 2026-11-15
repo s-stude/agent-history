@@ -1,5 +1,6 @@
 import { normalizeUrl } from './db.js';
 import { READER_ROLE } from './roles.js';
+import { shellQuote } from './shell.js';
 
 export const PSQL = '/Applications/Postgres 18.app/Contents/Versions/latest/bin/psql';
 export const POINTER_START = '<!-- agent-history:pointer:start -->';
@@ -16,14 +17,14 @@ export function readerUrl(connectionString, role = READER_ROLE) {
 
 export function pointerText({ url, psql = PSQL, exportDir = null }) {
   const reader = readerUrl(url);
-  const run = `"${psql}" --dbname="${reader}" -X -c`;
+  const run = `${shellQuote(psql)} ${shellQuote(`--dbname=${reader}`)} -X -c`;
   const lines = [
     POINTER_START,
     '## Past sessions',
     '',
     'Every Claude Code and Codex session is stored in PostgreSQL (read-only access below). Use it when asked about earlier work ("remember when…", retrospectives).',
     '',
-    `- Connect: \`"${psql}" --dbname="${reader}"\``,
+    `- Connect: \`${shellQuote(psql)} ${shellQuote(`--dbname=${reader}`)}\``,
     '- Tables: `sessions` (id, tool, project, cwd, started_at, ended_at, title, parent_id) and `messages` (session_id, ts, role, kind, phase, text, tool_name, files).',
     '- Kinds: prompt, text (answers; Codex phase final_answer/commentary), tool_use, tool_result, summary, notification.',
     '- Filter by project and date first, then search text. Always show dates; when sessions disagree, the newer one wins.',

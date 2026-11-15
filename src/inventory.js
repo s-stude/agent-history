@@ -4,6 +4,7 @@ import { opendir, stat as fsStat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { createZstdDecompress } from 'node:zlib';
+import { loadConfig } from './config.js';
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const UUID_RE = new RegExp(`^${UUID}$`);
@@ -14,12 +15,13 @@ const CLAUDE_METADATA = /^(?:sessions-index\.json|agent-[0-9a-zA-Z_-]+\.meta\.js
 const CLAUDE_UUID_PREFIX = new RegExp(`^${UUID}(?:\\.|$)`);
 
 export function rootsFromEnv(env = process.env, home = homedir()) {
+  const saved = loadConfig(env).roots ?? {};
   const claude = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
   const codex = env.CODEX_HOME || path.join(home, '.codex');
   return {
-    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS || path.join(claude, 'projects'),
-    codexSessions: env.AGENT_HISTORY_CODEX_SESSIONS || path.join(codex, 'sessions'),
-    codexArchived: env.AGENT_HISTORY_CODEX_ARCHIVED || path.join(codex, 'archived_sessions'),
+    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS || saved.claudeProjects || path.join(claude, 'projects'),
+    codexSessions: env.AGENT_HISTORY_CODEX_SESSIONS || saved.codexSessions || path.join(codex, 'sessions'),
+    codexArchived: env.AGENT_HISTORY_CODEX_ARCHIVED || saved.codexArchived || path.join(codex, 'archived_sessions'),
   };
 }
 

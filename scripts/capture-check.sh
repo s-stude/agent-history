@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
-# Live capture check: asks the agent to reply with a random word, then waits up to 60 s
-# for a final (non-provisional) assistant row with that word. Spends one model call.
-# Usage: scripts/capture-check.sh claude|codex
+# Live capture check for the installed hooks, in a real interactive session.
+# One-shot `claude -p` / `codex exec` runs cancel unfinished async hooks at exit, so they cannot prove hook capture.
+# Usage: scripts/capture-check.sh claude|codex   (then send the printed prompt in a normal session of that tool)
 set -euo pipefail
 TOOL="${1:?claude or codex}"
 PSQL="/Applications/Postgres 18.app/Contents/Versions/latest/bin/psql"
 URL="${AGENT_HISTORY_READER_URL:-postgresql://agent_history_reader@localhost:5432/agent_history}"
 WORD="capture$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-PROMPT="Reply with exactly this one word and nothing else: ${WORD}"
+STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-if [ "$TOOL" = claude ]; then claude -p "$PROMPT" >/dev/null; else codex exec "$PROMPT" >/dev/null; fi
-start=$(date +%s)
+echo "In an interactive ${TOOL} session, send exactly:"
+echo
+echo "  Reply with exactly this one word and nothing else: ${WORD}"
+echo
+echo "Waiting up to 5 minutes for a final, non-provisional answer of exactly '${WORD}' in a ${TOOL} session updated after ${STARTED}..."
+deadline=$(( $(date +%s) + 300 ))
+SQL="SELECT m.session_id || ' ' || to_char(m.ts, 'HH24:MI:SS')
+       FROM messages m JOIN sessions s ON s.id = m.session_id
+      WHERE s.tool = '${TOOL}' AND s.updated_at >= '${STARTED}'
+        AND m.role = 'assistant' AND m.kind = 'text' AND NOT m.provisional
+        AND coalesce(m.phase, 'final_answer') = 'final_answer'
+        AND btrim(m.text) = '${WORD}'
+      LIMIT 1"
 while :; do
-  found=$("$PSQL" --dbname="$URL" -X -At -c "SELECT m.session_id || ' ' || m.ts FROM messages m WHERE m.role = 'assistant' AND m.kind = 'text' AND NOT m.provisional AND m.text LIKE '%${WORD}%' AND m.session_id LIKE '${TOOL}:%' LIMIT 1")
-  if [ -n "$found" ]; then echo "PASS after $(( $(date +%s) - start )) s: $found"; exit 0; fi
-  if [ $(( $(date +%s) - start )) -ge 60 ]; then echo "FAIL: ${WORD} not captured as a final assistant row within 60 s"; exit 1; fi
+  found="$("$PSQL" --dbname="$URL" -X -At -c "$SQL")"
+  if [ -n "$found" ]; then echo "PASS: captured in ${found}"; exit 0; fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then echo "FAIL: no final answer '${WORD}' captured within 5 minutes"; exit 1; fi
   sleep 2
 done

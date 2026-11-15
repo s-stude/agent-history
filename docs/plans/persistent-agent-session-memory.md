@@ -137,7 +137,7 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 
 ### Task 9: Backfill via scan
 - [x] `scan` walks the Task 3 inventory; flags `--tool`, `--changed-since-last`, `--dry-run`; resumable from `sources` checkpoints after interruption
-- [x] Set budgets before running: peak RSS < 300 MB for the Node process, full scan < 30 min, DB size (`pg_database_size`) < 2 GB; revise only with a written reason. Result: time and size met; memory met as macOS peak footprint (195 MB) but not as max RSS (368 MB); see the design doc's Measured section — open for the user
+- [ ] **Open, user decision:** budgets peak RSS < 300 MB, full scan < 30 min, DB size < 2 GB. Time (190 s) and size (858 MB) are met; max RSS is 368 MB (not met), macOS peak footprint 195 MB. Either accept peak footprint as the metric or keep working on off-heap memory (design doc, Measured)
 - [x] Trial in a throwaway `agent_history_test_trial_<rand>` DB: run the full scan read-only over real transcripts, measure peak memory (`/usr/bin/time -l`), duration, `pg_database_size`, and separately the `messages` heap, `text_tsv` GIN and trigram GIN sizes (`pg_relation_size`) plus substring query latency; drop the trigram index if it does not pay for itself; keep the trial DB until Task 13's timed queries are done
 - [ ] **(user)** Run `agent-history scan` into the real `agent_history` DB after `setup database`, then `ANALYZE`
 - [x] During the trial scan, ingest a synthetic appended turn from an isolated source and record its latency; live-agent checks stay user-run

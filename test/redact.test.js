@@ -115,11 +115,10 @@ test('env assignments whose value is a reference are kept', () => {
     'export GITHUB_TOKEN=${GH_TOKEN}',
     'API_KEY: process.env.ANTHROPIC_API_KEY,',
     "DB_PASSWORD: os.environ['DB_PASSWORD']",
+    "DB_PASSWORD = os.getenv('DB_PASSWORD')",
     'SLACK_TOKEN=<your-token-here>',
     'SLACK_TOKEN="<your-token-here>"',
     'CLIENT_SECRET: {{ secrets.client }}',
-    'JWT_SECRET: config.auth.jwtSecret,',
-    'ACCESS_TOKEN: settings.get_token()',
   ]) {
     assert.equal(redactText(line), line, line);
   }
@@ -138,15 +137,40 @@ test('opaque and literal env values are fully redacted', () => {
     `DB_PASSWORD=${S.ENV_VALUE}`,
     `DB_PASSWORD="${S.ENV_VALUE}"`,
     'DB_PASSWORD="config.auth.jwtSecret,"',
+    'DB_PASSWORD=my.secret.pass;',
+    'DB_PASSWORD=Ab3.x9Q,',
+    'DB_PASSWORD=config.auth.jwtSecret,',
+    'DB_PASSWORD=settings.get_token()',
+    'DB_PASSWORD=abc',
+    'DB_PASSWORD=123',
+    'DB_PASSWORD=x',
+    'DB_PASSWORD="one"',
+    'MAX_PASSWORD=123456789',
   ];
   for (const line of cases) {
     assert.equal(redactText(line), 'DB_PASSWORD=[REDACTED:env]'.replace('DB_PASSWORD', line.split('=')[0]), line);
-    assert.ok(!sanitizeLine(JSON.stringify({ text: `${line}\nnext` })).includes(line.split('=')[1]), line);
+    const name = line.split('=')[0];
+    assert.equal(JSON.parse(sanitizeLine(JSON.stringify({ text: `${line}\nnext` }))).text, `${name}=[REDACTED:env]\nnext`, line);
   }
 });
 
 test('a quoted value is removed whole, the rest of the line stays', () => {
   assert.equal(redactText('DB_PASSWORD="correct horse battery staple" # note'), 'DB_PASSWORD=[REDACTED:env] # note');
+});
+
+test('bare PASSWORD with short or punctuated values is redacted on both paths', () => {
+  for (const value of ['my.secret.pass;', 'a', 'ab', 'abc', '"abc"', "'ab'"]) {
+    assert.equal(redactText(`PASSWORD=${value}`), 'PASSWORD=[REDACTED:env]', value);
+    assert.equal(JSON.parse(sanitizeLine(JSON.stringify({ text: `PASSWORD=${value}` }))).text, 'PASSWORD=[REDACTED:env]', value);
+  }
+});
+
+test('deep structural nesting is bounded and never leaks', () => {
+  const line = '{"x":'.repeat(5000) + '{"password":"synthetic-secret-123"}' + '}'.repeat(5000);
+  JSON.parse(line);
+  const out = sanitizeLine(line);
+  assert.ok(!out.includes('synthetic-secret-123'));
+  assert.ok(out.includes('[REDACTED:depth]'));
 });
 
 test('numeric token-count metrics are not credentials', () => {

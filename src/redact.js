@@ -13,12 +13,12 @@ const PATTERNS = [
 ];
 
 const SECRET_NAME = '(?=[A-Z])[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)S?';
-const ENV_VALUE = `"(?:[^"\\\\\\n]|\\\\.)*"|'[^'\\n]*'|[^\\s"'#][^\\s#]{3,}`;
+const ENV_VALUE = `"(?:[^"\\\\\\n]|\\\\.)*"|'[^'\\n]*'|\\{\\{[^{}\\n]{1,80}\\}\\}|[^\\s"'#][^\\s#]*`;
 const ENV_ASSIGN = new RegExp(
   `^(?<lead>[ \\t]*(?:export[ \\t]+)?(?<name>${SECRET_NAME})[ \\t]*[=:][ \\t]*)(?<value>${ENV_VALUE})`,
   'gm',
 );
-const METRIC_NAME = /(?:^|_)(?:MAX|MIN|NUM|COUNT|TOTAL|LIMIT)(?:_|$)|TOKENS?_(?:COUNT|LIMIT|USED|BUDGET)$/;
+const METRIC_NAME = /TOKENS(?:_|$)|TOKEN_(?:COUNT|LIMIT|BUDGET)$/;
 const SECRET_KEY = new RegExp(
   '^(?:api[_-]?key|apikey|x-api-key|secret|client[_-]?secret|password|passwd|' +
     'access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|authorization|private[_-]?key|' +
@@ -34,11 +34,9 @@ const REFERENCE_VALUE = new RegExp(
     `^import\\.meta\\.env\\.${IDENT}[,;]?$`,
     `^os\\.environ(?:\\[(?:'${IDENT}'|"${IDENT}")\\]|\\.get\\((?:'${IDENT}'|"${IDENT}")\\))[,;)]?$`,
     `^os\\.getenv\\((?:'${IDENT}'|"${IDENT}")\\)[,;)]?$`,
-    `^${IDENT}(?:\\.${IDENT})+(?:\\(\\))?[,;]$`,
-    `^${IDENT}(?:\\.${IDENT})+\\(\\)$`,
   ].join('|'),
 );
-const PLACEHOLDER_VALUE = /^["']?<[^<>\s]{1,60}>["']?$/;
+const PLACEHOLDER_VALUE = /^["']?<[^<>\s]{1,60}>["']?$|^\{\{[^{}]{1,80}\}\}$/;
 const REDACTED_MARKER = /^\[REDACTED(?::\w+)?\]$/;
 
 function keepAssignment(name, value) {
@@ -62,7 +60,7 @@ export function redactText(text) {
   });
 }
 
-const MAX_DEPTH = 32;
+const MAX_DEPTH = 64;
 
 function maybeJson(text) {
   const s = text.trim();
@@ -77,20 +75,21 @@ function maybeJson(text) {
 }
 
 export function sanitize(value, depth = 0) {
+  if (depth > MAX_DEPTH) return '[REDACTED:depth]';
   if (typeof value === 'string') {
-    const decoded = depth < MAX_DEPTH ? maybeJson(value) : undefined;
+    const decoded = maybeJson(value);
     if (decoded !== undefined && decoded !== null && (typeof decoded === 'object' || typeof decoded === 'string')) {
       return JSON.stringify(sanitize(decoded, depth + 1));
     }
     return redactText(value);
   }
-  if (Array.isArray(value)) return value.map((v) => sanitize(v, depth));
+  if (Array.isArray(value)) return value.map((v) => sanitize(v, depth + 1));
   if (value !== null && typeof value === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       const key = stripNul(k);
       if (typeof v === 'string' && SECRET_KEY.test(key) && v && !REDACTED_MARKER.test(v)) out[key] = '[REDACTED:field]';
-      else out[key] = sanitize(v, depth);
+      else out[key] = sanitize(v, depth + 1);
     }
     return out;
   }

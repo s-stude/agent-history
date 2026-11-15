@@ -221,6 +221,9 @@ async function commitBatch(db, ctx, batch) {
     } else {
       await trx('sources').insert({ path: ctx.source.path, ...checkpoint, generation: 1 });
     }
+    if (batch.done) {
+      await trx('ingest_errors').where({ source_path: ctx.source.path }).whereNull('resolved_at').update({ resolved_at: trx.fn.now() });
+    }
     const [{ generation }] = await trx('sources').where({ path: ctx.source.path }).select('generation');
     ctx.expectedGeneration = String(generation);
     ctx.reset = false;

@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { useTestDb } from './helpers/db.js';
+import { makeRoots } from './helpers/tmp.js';
 
 const run = promisify(execFile);
 const BIN = fileURLToPath(new URL('../bin/agent-history', import.meta.url));
@@ -36,13 +37,14 @@ test('doctor against a refused port exits 1 quickly', async () => {
   assert.ok(Date.now() - started < 5000);
 });
 
-test('doctor reports an uninitialized test DB from an unrelated cwd', async (t) => {
+test('doctor reports an uninitialized test DB from an unrelated cwd and fails', async (t) => {
   const h = await useTestDb(t, { migrate: false });
   if (!h) return;
-  const r = await cli(['doctor'], { AGENT_HISTORY_DATABASE_URL: h.url });
-  assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, new RegExp(`^database\\t${h.name}$`, 'm'));
-  assert.match(r.stdout, /^schema\tuninitialized/m);
+  const { env } = await makeRoots(t);
+  const r = await cli(['doctor'], { AGENT_HISTORY_DATABASE_URL: h.url, ...env });
+  assert.equal(r.code, 1, r.stderr);
+  assert.match(r.stdout, new RegExp(`^info\\tdatabase\\t${h.name}$`, 'm'));
+  assert.match(r.stdout, /^fail\tschema\tuninitialized/m);
 });
 
 test('subcommand --help and -h show usage without running the command', async () => {

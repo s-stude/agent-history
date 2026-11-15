@@ -213,3 +213,15 @@ test('redaction happens before trimming for assignment values', () => {
   assert.ok(!out.includes('correct'));
   assert.ok(!out.includes('battery'));
 });
+
+test('assignments in the middle of a sentence or command are redacted', () => {
+  for (const [input, expected] of [
+    ['token and DB_PASSWORD=hunter2 here', 'token and DB_PASSWORD=[REDACTED:env] here'],
+    ['env API_TOKEN=abc123 npm test', 'env API_TOKEN=[REDACTED:env] npm test'],
+    ['cd x && export SECRET_KEY="a b"; run', 'cd x && export SECRET_KEY=[REDACTED:env]; run'],
+    ['(GITHUB_TOKEN=ghx1)', '(GITHUB_TOKEN=[REDACTED:env]'],
+  ]) {
+    assert.equal(redactText(input), expected, input);
+  }
+  for (const benign of ['foo.API_KEY = x', 'my_PASSWORD_field', 'see MAX_TOKENS: 4096 below']) assert.equal(redactText(benign), benign);
+});

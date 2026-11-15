@@ -3,6 +3,9 @@ import { databaseUrl, withDb } from './db.js';
 import { schemaStatus } from './schema.js';
 import { migrateWithLock } from './migrate.js';
 import { logLine, readStdin, runHook } from './hook.js';
+import { scan } from './scan.js';
+import { doctor as runDoctor } from './doctor.js';
+import { exportRoot, exportSessions } from './export.js';
 import { buildInventory, rootsFromEnv } from './inventory.js';
 
 const COMMANDS = {
@@ -31,30 +34,51 @@ async function init(args) {
   return 0;
 }
 
-async function doctor(args) {
+async function doctorCommand(args) {
   noOptions(args);
-  await withDb(databaseUrl(), async (db) => {
-    const { rows } = await db.raw('SELECT current_setting(?) AS version, current_database() AS database', ['server_version']);
-    const schema = await schemaStatus(db);
-    console.log(`server\t${rows[0].version}`);
-    console.log(`database\t${rows[0].database}`);
-    console.log(`schema\t${schema.state} (${schema.applied.length} applied, ${schema.pending.length} pending, ${schema.unknown.length} unknown)`);
+  return withDb(databaseUrl(), async (db) => {
+    const { checks, failed } = await runDoctor(db);
+    for (const c of checks) console.log(`${c.level}\t${c.check}\t${c.detail}`);
+    return failed ? 1 : 0;
   });
-  return 0;
 }
 
-async function scan(args) {
-  const { values } = parseArgs({ args, options: { 'dry-run': { type: 'boolean' } }, strict: true });
-  if (!values['dry-run']) {
-    console.error('agent-history scan: only --dry-run is implemented yet');
-    return 2;
-  }
+async function printInventory() {
   const inv = await buildInventory(rootsFromEnv());
   for (const [key, n] of inv.counts()) console.log(`${key}\t${n}`);
   console.log(`sessions\t${inv.sessions().size}`);
   console.log(`duplicate_segments\t${inv.duplicateSegments().size}`);
   for (const kind of ['empty', 'skipped', 'unsupported', 'unreadable']) console.log(`${kind}\t${inv[kind].length}`);
   return 0;
+}
+
+async function scanCommand(args) {
+  const { values } = parseArgs({
+    args,
+    options: {
+      'dry-run': { type: 'boolean' },
+      'changed-since-last': { type: 'boolean' },
+      tool: { type: 'string' },
+    },
+    strict: true,
+  });
+  if (values.tool && !['claude', 'codex'].includes(values.tool)) {
+    console.error('agent-history scan: --tool must be claude or codex');
+    return 2;
+  }
+  if (values['dry-run']) return printInventory();
+  return withDb(databaseUrl(), async (db) => {
+    const schema = await schemaStatus(db);
+    if (schema.state !== 'current') {
+      console.error(`agent-history scan: schema is ${schema.state}; run agent-history init`);
+      return 1;
+    }
+    const started = Date.now();
+    const summary = await scan(db, { tool: values.tool ?? null, changedSinceLast: Boolean(values['changed-since-last']) });
+    summary.seconds = Math.round((Date.now() - started) / 100) / 10;
+    for (const [k, v] of Object.entries(summary)) console.log(`${k}\t${v}`);
+    return summary.errors ? 1 : 0;
+  });
 }
 
 async function ingest(args) {
@@ -70,7 +94,20 @@ async function ingest(args) {
   return 0;
 }
 
-const HANDLERS = { init, doctor, scan, ingest };
+async function exportCommand(args) {
+  const { values } = parseArgs({
+    args,
+    options: { session: { type: 'string', multiple: true }, out: { type: 'string' } },
+    strict: true,
+  });
+  return withDb(databaseUrl(), async (db) => {
+    const files = await exportSessions(db, { root: values.out ?? exportRoot(), sessionIds: values.session ?? null });
+    console.log(`exported\t${files.length}`);
+    return 0;
+  });
+}
+
+const HANDLERS = { init, doctor: doctorCommand, scan: scanCommand, ingest, export: exportCommand };
 
 export async function main(argv = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({

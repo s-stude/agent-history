@@ -34,6 +34,7 @@ export async function makeRoots(t) {
   };
   for (const p of Object.values(roots)) await mkdir(p, { recursive: true });
   const env = {
+    AGENT_HISTORY_HOME: path.join(dir, 'home'),
     AGENT_HISTORY_CLAUDE_PROJECTS: roots.claudeProjects,
     AGENT_HISTORY_CODEX_SESSIONS: roots.codexSessions,
     AGENT_HISTORY_CODEX_ARCHIVED: roots.codexArchived,

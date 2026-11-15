@@ -1,18 +1,17 @@
 import { appendFile, mkdir, realpath } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { databaseUrl, openDb } from './db.js';
 import { classifyClaude, classifyCodex, rootsFromEnv } from './inventory.js';
 import { ingestSource, insertProvisional, recordError } from './ingest.js';
 import { cleanText } from './parsers/common.js';
 import { schemaStatus } from './schema.js';
+import { historyHome } from './paths.js';
+import { exportEnabled, exportRoot, exportSessions } from './export.js';
 
 export const MAX_STDIN = 16 * 1024 * 1024;
 const UNREACHABLE = new Set(['ECONNREFUSED', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENOTFOUND', 'EPERM', 'ECONNRESET', '57P03', '3D000', '28000']);
 
-export function historyHome(env = process.env) {
-  return env.AGENT_HISTORY_HOME || path.join(homedir(), '.agent-history');
-}
+export { historyHome };
 
 export async function logLine(fields, env = process.env) {
   const dir = historyHome(env);
@@ -107,6 +106,14 @@ export async function runHook(input, { env = process.env, roots = rootsFromEnv(e
         text: cleanText(answer),
         turnId: typeof payload.turn_id === 'string' ? payload.turn_id : null,
       });
+    }
+    if (await exportEnabled(env)) {
+      const ids = [...new Set(sources.map((s) => s.sessionKey))];
+      try {
+        if (ids.length) await exportSessions(db, { root: exportRoot(env), sessionIds: ids });
+      } catch (err) {
+        await logLine([sources[0]?.tool, sessionId, `export-${errorClass(err)}`], env);
+      }
     }
     return { ok: true, sources: sources.length };
   } catch (err) {

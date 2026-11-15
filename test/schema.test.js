@@ -11,7 +11,7 @@ const MIGRATIONS = (await migrationFiles()).length;
 import { readerRoleSql } from '../src/roles.js';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { tmpDir } from './helpers/tmp.js';
+import { makeRoots, tmpDir } from './helpers/tmp.js';
 
 const run = promisify(execFile);
 const BIN = fileURLToPath(new URL('../bin/agent-history', import.meta.url));
@@ -53,11 +53,12 @@ test('two simultaneous first-time inits on a pristine DB both succeed', async (t
 test('init via CLI from an unrelated cwd, then doctor says current', async (t) => {
   const h = await useTestDb(t, { migrate: false });
   if (!h) return;
-  const env = { ...process.env, AGENT_HISTORY_DATABASE_URL: h.url };
+  const { env: rootsEnv } = await makeRoots(t);
+  const env = { ...process.env, ...rootsEnv, AGENT_HISTORY_DATABASE_URL: h.url };
   const init = await run(process.execPath, [BIN, 'init'], { env, cwd: '/' });
   assert.match(init.stdout, new RegExp(`migrations applied: ${MIGRATIONS}`));
   const doctor = await run(process.execPath, [BIN, 'doctor'], { env, cwd: '/' });
-  assert.match(doctor.stdout, new RegExp(`^schema\tcurrent \\(${MIGRATIONS} applied, 0 pending, 0 unknown\\)$`, 'm'));
+  assert.match(doctor.stdout, new RegExp(`^ok\tschema\tcurrent \\(${MIGRATIONS} applied, 0 pending, 0 unknown\\)$`, 'm'));
 });
 
 test('a DB with an unknown migration is refused as newer', async (t) => {

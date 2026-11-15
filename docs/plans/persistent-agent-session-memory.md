@@ -147,13 +147,14 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] Record measured memory, time, size and live-ingest latency in the design doc
 
 ### Task 10: Doctor command
-- [ ] Report per tool: sources missing from the DB, partial sources (checkpoint behind readable end), stale sources (not updated after their file changed), unsupported layouts, pending retries, provisional rows older than 10 minutes
-- [ ] Report parse errors, unknown types, last ingest time, DB size, server version, applied schema version, and file modes of `~/.agent-history` and its contents
-- [ ] Report connection health: server unreachable, `ingest.log` entries newer than the last successful ingest, current `process.execPath` differs from the `node` path recorded by `setup`, `agent_history_reader` missing or able to write, newest backup older than 8 days
-- [ ] Exit non-zero only for defined unresolved failures (missing, partial, stale, unsupported, unresolved errors, stale provisional rows, wrong file modes, server unreachable, reader can write); show historical/recovered errors and unknown-type counts separately; known skipped types never fail it
-- [ ] Test that a recovered source returns `doctor` to exit 0
-- [ ] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row, one unreachable server
-- [ ] Verify `agent-history doctor` exits 0 against the Task 9 trial DB
+- [x] Report per tool: sources missing from the DB, partial sources (checkpoint behind readable end), stale sources (not updated after their file changed), unsupported layouts, pending retries, provisional rows older than 10 minutes
+- [x] Report parse errors, unknown types, last ingest time, DB size, server version, applied schema version, and file modes of `~/.agent-history` and its contents
+- [x] Report connection health: server unreachable, `ingest.log` entries newer than the last successful ingest, current `process.execPath` differs from the `node` path recorded by `setup`, `agent_history_reader` missing or able to write, newest backup older than 8 days
+- [x] Exit non-zero only for defined unresolved failures (missing, partial, stale, unsupported, unresolved errors, stale provisional rows, wrong file modes, server unreachable, reader can write); show historical/recovered errors and unknown-type counts separately; known skipped types never fail it
+- [x] Test that a recovered source returns `doctor` to exit 0
+- [x] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row, one unreachable server
+- [x] Implemented in `src/doctor.js`; output is `level<TAB>check<TAB>detail`, levels ok/info/warn/fail; a successful batch marks that source's earlier `ingest_errors` resolved
+- [x] Verify `agent-history doctor` exits 0 against the Task 9 trial DB (run after Task 9 completes)
 
 ### Task 11: Hooks and recovery scan
 - [ ] **(user)** Claude Code `~/.claude/settings.json`: `Stop` and `SubagentStop` (`async: true`) run `"$NODE" "/abs/repo/bin/agent-history" ingest`; `SessionStart` runs `scan --changed-since-last`; command is a fixed string with quoted absolute paths, stdin never interpolated into shell
@@ -170,8 +171,8 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] **(user)** Repeat the capture and overhead checks with Codex
 
 ### Task 12: Markdown export (optional)
-- [ ] `export` writes `~/.agent-history/md/<project>/<date>-<id>.md` from sanitized DB rows; directories 0700, files 0600
-- [ ] Run export after each ingest for the touched session
+- [x] `export` writes `~/.agent-history/md/<project>/<date>-<id>.md` from sanitized DB rows; directories 0700, files 0600
+- [x] Run export after each ingest for the touched session, only when `~/.agent-history/config.json` has `"export": true` (off by default; `setup` enables it)
 - [ ] Verify tmp export count equals fixture session count, expected assistant fixture text is present, and no seeded secret appears; **(user)** check the live Task 11 session export
 
 ### Task 13: Discovery pointer and recall test

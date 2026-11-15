@@ -7,6 +7,9 @@ import { useTestDb } from './helpers/db.js';
 import { migrateWithLock, NewerSchemaError } from '../src/migrate.js';
 import { schemaStatus } from '../src/schema.js';
 import { readerRoleSql } from '../src/roles.js';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { tmpDir } from './helpers/tmp.js';
 
 const run = promisify(execFile);
 const BIN = fileURLToPath(new URL('../bin/agent-history', import.meta.url));
@@ -148,4 +151,50 @@ test('Postgres.app psql runs the pointer query in a read-only transaction', asyn
   ].join(' ');
   const { stdout } = await run(PSQL, ['--dbname', h.url, '-X', '-At', '-v', 'ON_ERROR_STOP=1', '-c', sql]);
   assert.match(stdout, /proj\|\|.*<b>trigram<\/b> <b>index<\/b>/);
+});
+
+async function migrationsDir(t, body) {
+  const dir = await tmpDir(t);
+  await writeFile(path.join(dir, '001_probe.js'), `${body}\nexport async function down() {}\n`);
+  return dir;
+}
+
+async function tableExists(db, name) {
+  const { rows } = await db.raw('SELECT to_regclass(?) AS t', [`public.${name}`]);
+  return rows[0].t !== null;
+}
+
+test('losing the init connection mid-migration commits nothing', async (t) => {
+  const h = await useTestDb(t, { migrate: false });
+  if (!h) return;
+  const dir = await migrationsDir(t, `export async function up(knex) {
+  await knex.schema.createTable('probe', (t) => t.integer('n'));
+  await knex.raw('SELECT pg_sleep(10)');
+}`);
+  const running = migrateWithLock(h.url, { migrationsDirectory: dir });
+  let killed = 0;
+  for (let i = 0; i < 50 && !killed; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    const { rows } = await h.db.raw(
+      "SELECT pg_terminate_backend(pid) AS ok FROM pg_stat_activity WHERE datname = current_database() AND query LIKE '%pg_sleep(10)%' AND pid <> pg_backend_pid()",
+    );
+    killed = rows.filter((r) => r.ok).length;
+  }
+  assert.equal(killed, 1);
+  await assert.rejects(running);
+  assert.equal(await tableExists(h.db, 'probe'), false);
+  assert.equal(await tableExists(h.db, 'knex_migrations'), false);
+  assert.equal(await tableExists(h.db, 'knex_migrations_lock'), false);
+});
+
+test('a failing migration rolls back bootstrap and earlier steps', async (t) => {
+  const h = await useTestDb(t, { migrate: false });
+  if (!h) return;
+  const dir = await migrationsDir(t, `export async function up(knex) {
+  await knex.schema.createTable('probe', (t) => t.integer('n'));
+  throw new Error('boom');
+}`);
+  await assert.rejects(migrateWithLock(h.url, { migrationsDirectory: dir }), /boom/);
+  assert.equal(await tableExists(h.db, 'probe'), false);
+  assert.equal(await tableExists(h.db, 'knex_migrations'), false);
 });

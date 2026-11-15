@@ -1,4 +1,5 @@
-import { open, readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, open, readdir, readFile, stat } from 'node:fs/promises';
+import { parserVersion, prefixFingerprint } from './ingest.js';
 import path from 'node:path';
 import { buildInventory, rootsFromEnv } from './inventory.js';
 import { schemaStatus } from './schema.js';
@@ -25,7 +26,9 @@ async function hasCompleteLineAfter(file, offset) {
 }
 
 async function sourceProblems(db, inv) {
-  const rows = new Map((await db('sources').select('path', 'status', 'byte_offset', 'inode', 'size')).map((r) => [r.path, r]));
+  const rows = new Map(
+    (await db('sources').select('path', 'status', 'byte_offset', 'inode', 'size', 'prefix_fingerprint', 'parser_version')).map((r) => [r.path, r]),
+  );
   const out = { missing: [], partial: [], stale: [] };
   for (const s of inv.sources) {
     const row = rows.get(s.path);
@@ -39,10 +42,16 @@ async function sourceProblems(db, inv) {
     } catch {
       continue;
     }
-    if (s.immutable) {
+    if (row.parser_version !== parserVersion(s.tool)) {
+      out.stale.push(s);
+    } else if (s.immutable) {
       if (row.status !== 'done') out.partial.push(s);
       else if (String(row.size) !== String(info.size) || String(row.inode) !== String(info.ino)) out.stale.push(s);
-    } else if (String(row.inode) !== String(info.ino) || info.size < Number(row.byte_offset)) {
+    } else if (
+      String(row.inode) !== String(info.ino) ||
+      info.size < Number(row.byte_offset) ||
+      (await prefixFingerprint(s.path, Number(row.byte_offset))) !== row.prefix_fingerprint
+    ) {
       out.stale.push(s);
     } else if (info.size > Number(row.byte_offset) && (await hasCompleteLineAfter(s.path, Number(row.byte_offset)))) {
       out.partial.push(s);
@@ -53,19 +62,22 @@ async function sourceProblems(db, inv) {
 
 async function modeProblems(home) {
   const bad = [];
-  let info;
-  try {
-    info = await stat(home);
-  } catch {
-    return bad;
-  }
-  if ((info.mode & 0o777) !== 0o700) bad.push(`${home} ${(info.mode & 0o777).toString(8)}`);
-  for (const name of await readdir(home)) {
-    const p = path.join(home, name);
-    const st = await stat(p);
+  const walk = async (p) => {
+    let st;
+    try {
+      st = await lstat(p);
+    } catch {
+      return;
+    }
+    if (st.isSymbolicLink()) {
+      bad.push(`${p} symlink`);
+      return;
+    }
     const want = st.isDirectory() ? 0o700 : 0o600;
     if ((st.mode & 0o777) !== want) bad.push(`${p} ${(st.mode & 0o777).toString(8)}`);
-  }
+    if (st.isDirectory()) for (const name of await readdir(p)) await walk(path.join(p, name));
+  };
+  await walk(home);
   return bad;
 }
 
@@ -78,16 +90,22 @@ async function logAfter(home, since) {
   }
 }
 
-async function readerStatus(db) {
-  const role = await db('pg_roles').where({ rolname: READER_ROLE }).first();
-  if (!role) return 'missing';
+export async function roleStatus(db, role = READER_ROLE) {
+  const r = await db('pg_roles').where({ rolname: role }).first();
+  if (!r) return 'missing';
+  if (r.rolsuper || r.rolcreaterole || r.rolbypassrls) return 'can-write';
   const { rows } = await db.raw(
-    `SELECT bool_or(has_table_privilege(?, c.oid, 'INSERT') OR has_table_privilege(?, c.oid, 'UPDATE') OR has_table_privilege(?, c.oid, 'DELETE')) AS can_write
+    `SELECT bool_or(
+              has_table_privilege(:role, c.oid, 'INSERT') OR has_table_privilege(:role, c.oid, 'UPDATE')
+              OR has_table_privilege(:role, c.oid, 'DELETE') OR has_table_privilege(:role, c.oid, 'TRUNCATE')
+              OR has_table_privilege(:role, c.oid, 'TRIGGER') OR pg_has_role(:role, c.relowner, 'USAGE')
+            ) AS table_write,
+            has_schema_privilege(:role, 'public', 'CREATE') AS schema_create
        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relkind = 'r'`,
-    [READER_ROLE, READER_ROLE, READER_ROLE],
+      WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')`,
+    { role },
   );
-  return rows[0].can_write ? 'can-write' : 'ok';
+  return rows[0].table_write || rows[0].schema_create ? 'can-write' : 'ok';
 }
 
 async function readConfig(home) {
@@ -157,7 +175,7 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
   const modes = await modeProblems(home);
   add(modes.length ? 'fail' : 'ok', 'file_modes', modes.length ? modes.join('; ') : 'ok');
 
-  const reader = await readerStatus(db);
+  const reader = await roleStatus(db);
   add(reader === 'can-write' ? 'fail' : reader === 'missing' ? 'warn' : 'ok', 'reader_role', reader);
 
   const config = await readConfig(home);

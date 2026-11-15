@@ -7,6 +7,7 @@ import { createClaudeParser, PARSER_VERSION as CLAUDE_VERSION } from './parsers/
 import { createCodexParser, PARSER_VERSION as CODEX_VERSION } from './parsers/codex.js';
 
 export const BATCH_LINES = 500;
+export const BATCH_BYTES = 16 * 1024 * 1024;
 export const FINGERPRINT_WINDOW = 4096;
 const READ_CHUNK = 1 << 16;
 const MAX_ATTEMPTS = 4;
@@ -15,6 +16,10 @@ const RETRYABLE_PG = new Set(['40001', '40P01', '55P03']);
 
 export class StaleCheckpointError extends Error {
   name = 'StaleCheckpointError';
+}
+
+export function parserVersion(tool) {
+  return PARSERS[tool].version;
 }
 
 const PARSERS = {
@@ -68,30 +73,49 @@ async function openPlainReader(path, startOffset, startLine, expectedFingerprint
   }
   const consume = (bytes) => {
     if (head.length < FINGERPRINT_WINDOW) head = Buffer.concat([head, bytes.subarray(0, FINGERPRINT_WINDOW - head.length)]);
-    tail = Buffer.concat([tail, bytes]);
-    if (tail.length > FINGERPRINT_WINDOW) tail = tail.subarray(tail.length - FINGERPRINT_WINDOW);
+    if (bytes.length >= FINGERPRINT_WINDOW) {
+      tail = Buffer.from(bytes.subarray(bytes.length - FINGERPRINT_WINDOW));
+    } else {
+      const keep = tail.subarray(Math.max(0, tail.length - (FINGERPRINT_WINDOW - bytes.length)));
+      tail = Buffer.concat([keep, bytes]);
+    }
   };
   async function* lines() {
     try {
       let pos = startOffset;
       let lineNo = startLine;
-      let pending = Buffer.alloc(0);
-      const buf = Buffer.alloc(READ_CHUNK);
+      let pending = [];
+      let pendingBytes = 0;
       for (;;) {
-        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+        const chunk = Buffer.allocUnsafe(READ_CHUNK);
+        const { bytesRead } = await fh.read(chunk, 0, chunk.length, pos);
         if (!bytesRead) return;
+        const piece = chunk.subarray(0, bytesRead);
+        if (piece.indexOf(0x0a) === -1) {
+          pending.push(piece);
+          pendingBytes += bytesRead;
+          pos += bytesRead;
+          continue;
+        }
+        const data = pendingBytes ? Buffer.concat([...pending, piece], pendingBytes + bytesRead) : piece;
+        const base = pos - pendingBytes;
         pos += bytesRead;
-        const data = pending.length ? Buffer.concat([pending, buf.subarray(0, bytesRead)]) : Buffer.from(buf.subarray(0, bytesRead));
-        const base = pos - data.length;
+        pending = [];
+        pendingBytes = 0;
         let lineStart = 0;
-        let nl;
-        while ((nl = data.indexOf(0x0a, lineStart)) !== -1) {
+        let nl = data.indexOf(0x0a, 0);
+        while (nl !== -1) {
           lineNo++;
           consume(data.subarray(lineStart, nl + 1));
           yield { line: data.toString('utf8', lineStart, nl), lineNo, endOffset: base + nl + 1 };
           lineStart = nl + 1;
+          nl = data.indexOf(0x0a, lineStart);
         }
-        pending = data.subarray(lineStart);
+        if (lineStart < data.length) {
+          const rest = Buffer.from(data.subarray(lineStart));
+          pending.push(rest);
+          pendingBytes = rest.length;
+        }
       }
     } finally {
       await fh.close();
@@ -302,7 +326,7 @@ async function planSource(db, source) {
   return ctx;
 }
 
-async function ingestOnce(db, source, { batchLines = BATCH_LINES, onBatch, beforeCommit } = {}) {
+async function ingestOnce(db, source, { batchLines = BATCH_LINES, batchBytes = BATCH_BYTES, onBatch, beforeCommit } = {}) {
   const ctx = await planSource(db, source);
   if (ctx.skip) return { skipped: true, lines: 0, rows: 0 };
   const parser = PARSERS[source.tool].create(source, ctx.state);
@@ -311,6 +335,7 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, onBatch, befor
   const lines = reader ? reader.lines : streamLines(source, ctx.startLine);
   let rows = [];
   let count = 0;
+  let bytes = 0;
   let total = { lines: 0, rows: 0 };
   let lastLine = ctx.startLine;
   let endOffset = ctx.startOffset;
@@ -332,16 +357,22 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, onBatch, befor
     total.rows += rows.length;
     rows = [];
     count = 0;
+    bytes = 0;
     await onBatch?.({ lastLine, endOffset });
   };
 
   for await (const { line, lineNo, endOffset: end } of lines) {
-    if (line) rows.push(...parser.parseLine(line, lineNo));
+    if (line) {
+      for (const r of parser.parseLine(line, lineNo)) {
+        rows.push(r);
+        bytes += (r.text?.length ?? 0) + (r.raw?.length ?? 0);
+      }
+    }
     lastLine = lineNo;
     if (end !== null) endOffset = end;
     count++;
     total.lines++;
-    if (count >= batchLines) await flush(false);
+    if (count >= batchLines || bytes >= batchBytes) await flush(false);
   }
   await flush(true);
   return { skipped: false, ...total };

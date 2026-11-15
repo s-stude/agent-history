@@ -89,3 +89,42 @@ test('CLI doctor: unreachable server exits 1', async (t) => {
   assert.equal(r.code, 1);
   assert.match(r.stderr, /agent-history doctor: /);
 });
+
+test('a same-size in-place rewrite is reported stale before the next scan', async (t) => {
+  const e = await setup(t);
+  if (!e) return;
+  const text = await readFile(e.main, 'utf8');
+  await writeFile(e.main, text.replace('Add a retry', 'Add a RETRY'));
+  assert.equal(await e.level('claude_stale'), 'fail');
+  await scan(e.db, { roots: e.roots });
+  assert.equal(await e.level('claude_stale'), 'ok');
+});
+
+test('nested backups and exports with wrong modes fail; symlinks are flagged', async (t) => {
+  const e = await setup(t);
+  if (!e) return;
+  const home = e.env.AGENT_HISTORY_HOME;
+  await mkdir(path.join(home, 'backups'), { mode: 0o700 });
+  await mkdir(path.join(home, 'md', 'demo'), { recursive: true, mode: 0o700 });
+  await writeFile(path.join(home, 'backups', 'x.dump'), '', { mode: 0o644 });
+  await writeFile(path.join(home, 'md', 'demo', 'x.md'), '', { mode: 0o600 });
+  assert.equal(await e.level('file_modes'), 'fail');
+  await chmod(path.join(home, 'backups', 'x.dump'), 0o600);
+  assert.equal(await e.level('file_modes'), 'ok');
+  await chmod(path.join(home, 'md', 'demo', 'x.md'), 0o640);
+  assert.equal(await e.level('file_modes'), 'fail');
+  await chmod(path.join(home, 'md', 'demo', 'x.md'), 0o600);
+  const { symlink } = await import('node:fs/promises');
+  await symlink('/etc/hosts', path.join(home, 'md', 'link.md'));
+  const detail = (await e.run()).checks.find((c) => c.check === 'file_modes').detail;
+  assert.match(detail, /link\.md symlink/);
+});
+
+test('role audit: a role that can truncate, own or create is not read-only', async (t) => {
+  const e = await setup(t);
+  if (!e) return;
+  const { roleStatus } = await import('../src/doctor.js');
+  const { rows } = await e.db.raw('SELECT current_user AS u');
+  assert.equal(await roleStatus(e.db, rows[0].u), 'can-write');
+  assert.equal(await roleStatus(e.db, 'agent_history_role_that_does_not_exist'), 'missing');
+});

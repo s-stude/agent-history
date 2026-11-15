@@ -59,3 +59,31 @@ test('the hook exports touched sessions only when export is enabled', async (t) 
   await runHook(JSON.stringify({ session_id: PARENT, transcript_path: file }), { env: hookEnv, roots, url: h.url });
   assert.equal((await filesUnder(md)).length, 1);
 });
+
+test('export paths stay inside the root for dot and punctuation project names', async () => {
+  const { exportPath } = await import('../src/export.js');
+  const root = '/mirror/md';
+  for (const project of ['..', '.', '...', '!!!', '', null, '../etc', '.hidden']) {
+    const file = exportPath(root, { id: 'claude:x', project, started_at: null });
+    assert.equal(path.dirname(path.dirname(file)), root, String(project));
+  }
+  assert.equal(exportPath(root, { id: 'claude:abc', project: 'demo', started_at: new Date('2026-11-01T00:00:00Z') }), '/mirror/md/demo/2026-11-01-claude_abc.md');
+});
+
+test('overlapping exports of one session both succeed and leave the newest content', async (t) => {
+  const h = await useTestDb(t);
+  if (!h) return;
+  const { dir } = await makeRoots(t);
+  await h.db('sessions').insert({ id: 's1', tool: 'claude', native_id: 's1', project: 'demo' });
+  await h.db('messages').insert({ session_id: 's1', record_id: 'r1', block_ordinal: 0, kind: 'prompt', role: 'user', text: 'first' });
+  const root = path.join(dir, 'md');
+  const other = h.open();
+  const a = exportSessions(h.db, { root });
+  const b = exportSessions(other, { root });
+  await Promise.all([a, b]);
+  await h.db('messages').insert({ session_id: 's1', record_id: 'r2', block_ordinal: 0, kind: 'prompt', role: 'user', text: 'second' });
+  await Promise.all([exportSessions(h.db, { root }), exportSessions(other, { root })]);
+  const files = await filesUnder(root);
+  assert.equal(files.length, 1, 'no temp files left');
+  assert.match(await readFile(files[0], 'utf8'), /second/);
+});

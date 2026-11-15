@@ -1,14 +1,23 @@
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { historyHome } from './paths.js';
 
 const SAFE = /[^A-Za-z0-9._-]+/g;
 
+function safeComponent(value, fallback) {
+  const s = String(value || '').replace(SAFE, '_');
+  return !s || /^\.+$/.test(s) ? fallback : s.replace(/^\./, '_');
+}
+
 export function exportPath(root, session) {
-  const project = (session.project || 'unknown').replace(SAFE, '_');
+  const project = safeComponent(session.project, 'unknown');
   const date = session.started_at ? session.started_at.toISOString().slice(0, 10) : 'undated';
-  const id = session.id.replace(SAFE, '_');
-  return path.join(root, project, `${date}-${id}.md`);
+  const id = safeComponent(session.id, 'session');
+  const file = path.resolve(root, project, `${date}-${id}.md`);
+  const base = path.resolve(root);
+  if (path.dirname(path.dirname(file)) !== base) throw new Error('export path escapes the export root');
+  return file;
 }
 
 function fence(text) {
@@ -50,22 +59,32 @@ export function renderSession(session, messages) {
 export async function exportSessions(db, { root, sessionIds = null } = {}) {
   await mkdir(root, { recursive: true, mode: 0o700 });
   await chmod(root, 0o700);
-  const q = db('sessions').select('*').orderBy('id');
+  const q = db('sessions').select('id').orderBy('id');
   if (sessionIds) q.whereIn('id', sessionIds);
   const sessions = await q;
   const written = [];
-  for (const s of sessions) {
-    const messages = await db('messages')
-      .where({ session_id: s.id })
-      .select('role', 'kind', 'phase', 'text', 'tool_name', 'files', 'ts', 'provisional')
-      .orderByRaw('ts NULLS FIRST, source_line, block_ordinal');
-    const file = exportPath(root, s);
-    await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    await chmod(path.dirname(file), 0o700);
-    const tmp = `${file}.tmp`;
-    await writeFile(tmp, renderSession(s, messages), { mode: 0o600 });
-    await chmod(tmp, 0o600);
-    await rename(tmp, file);
+  for (const { id } of sessions) {
+    const file = await db.transaction(async (trx) => {
+      await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [`export:${id}`]);
+      const s = await trx('sessions').where({ id }).first();
+      const messages = await trx('messages')
+        .where({ session_id: id })
+        .select('role', 'kind', 'phase', 'text', 'tool_name', 'files', 'ts', 'provisional')
+        .orderByRaw('ts NULLS FIRST, source_line, block_ordinal');
+      const target = exportPath(root, s);
+      await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+      await chmod(path.dirname(target), 0o700);
+      const tmp = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+      try {
+        await writeFile(tmp, renderSession(s, messages), { mode: 0o600, flag: 'wx' });
+        await chmod(tmp, 0o600);
+        await rename(tmp, target);
+      } catch (err) {
+        await rm(tmp, { force: true });
+        throw err;
+      }
+      return target;
+    });
     written.push(file);
   }
   return written;

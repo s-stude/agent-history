@@ -1,11 +1,11 @@
 import { stat } from 'node:fs/promises';
 import { buildInventory, rootsFromEnv } from './inventory.js';
-import { ingestSource, recordError } from './ingest.js';
+import { ingestSource, parserVersion, recordError } from './ingest.js';
 
 async function unchangedImmutable(db, source) {
   if (!source.immutable) return false;
   const row = await db('sources').where({ path: source.path }).first();
-  if (!row || row.status !== 'done') return false;
+  if (!row || row.status !== 'done' || row.parser_version !== parserVersion(source.tool)) return false;
   const info = await stat(source.path);
   return String(row.inode) === String(info.ino) && String(row.size) === String(info.size);
 }

@@ -62,3 +62,15 @@ test('a corrupt source is recorded and the scan continues', async (t) => {
   assert.match(errors[0].source_path, /b7ff\.jsonl\.zst$/);
   assert.equal(errors[0].detail, null);
 });
+
+test('--changed-since-last still replays an immutable source parsed by an older parser', async (t) => {
+  const h = await useTestDb(t);
+  if (!h) return;
+  const roots = await tree(t);
+  await scan(h.db, { roots });
+  const zst = await h.db('sources').where('encoding', 'zst').first();
+  await h.db('sources').where({ path: zst.path }).update({ parser_version: 0 });
+  const r = await scan(h.db, { roots, changedSinceLast: true });
+  assert.equal(r.ingested, 1);
+  assert.equal((await h.db('sources').where({ path: zst.path }).first()).parser_version, 1);
+});

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { recordId } from '../inventory.js';
 import { bounded, redactText, sanitize, sanitizeLine } from '../redact.js';
-import { cleanBounded, cleanText, safeDate } from './common.js';
+import { cleanBounded, cleanText, restoreSession, safeDate, snapshotSession } from './common.js';
 
 export const PARSER_VERSION = 1;
 export const TOOL_TEXT_LIMIT = 500;
@@ -69,7 +69,7 @@ function classifyUserString(text) {
   return ['user', 'prompt'];
 }
 
-export function createClaudeParser(source) {
+export function createClaudeParser(source, state = null) {
   const toolNames = new Map();
   const unknown = new Map();
   const skipped = new Map();
@@ -89,9 +89,10 @@ export function createClaudeParser(source) {
     source_path: source.path,
     cli_version: null,
   };
-  let aiTitle = null;
-  let customTitle = null;
-  let agentName = null;
+  let aiTitle = state?.aiTitle ?? null;
+  let customTitle = state?.customTitle ?? null;
+  let agentName = state?.agentName ?? null;
+  restoreSession(session, state?.session);
 
   const count = (map, key) => map.set(key, (map.get(key) || 0) + 1);
 
@@ -230,5 +231,9 @@ export function createClaudeParser(source) {
     return session;
   }
 
-  return { parseLine, finish, unknown, skipped };
+  function snapshot() {
+    return { aiTitle, customTitle, agentName, session: snapshotSession(session) };
+  }
+
+  return { parseLine, finish, snapshot, unknown, skipped };
 }

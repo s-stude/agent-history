@@ -69,3 +69,21 @@ test('unknown options before the command are rejected without running it', async
     assert.doesNotMatch(r.stderr, /ECONNREFUSED|agent-history init:/);
   }
 });
+
+test('ingest reads hook JSON from stdin and exits 0 even when the server is unreachable', async () => {
+  const { spawn } = await import('node:child_process');
+  const { mkdtemp } = await import('node:fs/promises');
+  const { REPO } = await import('./helpers/tmp.js');
+  const home = await mkdtemp(`${REPO}tmp/cli-home-`);
+  const child = spawn(process.execPath, [BIN, 'ingest'], {
+    env: { ...process.env, AGENT_HISTORY_HOME: home, AGENT_HISTORY_DATABASE_URL: 'postgresql://localhost:1/agent_history_test_none' },
+    cwd: '/',
+  });
+  child.stdin.end(JSON.stringify({ session_id: 'abc', transcript_path: '/nonexistent/x.jsonl' }));
+  const code = await new Promise((r) => child.on('close', r));
+  assert.equal(code, 0);
+  const { readFile, rm } = await import('node:fs/promises');
+  const log = await readFile(`${home}/ingest.log`, 'utf8');
+  assert.match(log, /\tabc\t/);
+  await rm(home, { recursive: true, force: true });
+});

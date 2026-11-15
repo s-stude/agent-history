@@ -56,3 +56,13 @@ test('a failing migration drops the created test DB', async (t) => {
   }
   assert.deepEqual(created, []);
 });
+
+test('URL query options cannot override timeouts or application name', async () => {
+  const { knexConfig, normalizeUrl } = await import('../src/db.js');
+  const pg = (await import('pg')).default;
+  const config = knexConfig('postgresql://u@localhost:1/x?statement_timeout=0&application_name=override&options=-c%20x&sslmode=disable');
+  const client = new pg.Client(config.connection);
+  assert.equal(client.connectionParameters.statement_timeout, 30000);
+  assert.equal(client.connectionParameters.application_name, 'agent-history');
+  assert.equal(normalizeUrl('postgresql://u@h:5/d?statement_timeout=0&sslmode=require'), 'postgresql://u@h:5/d?sslmode=require');
+});

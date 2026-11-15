@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import { databaseUrl, withDb } from './db.js';
 import { schemaStatus } from './schema.js';
 import { migrateWithLock } from './migrate.js';
+import { logLine, readStdin, runHook } from './hook.js';
 import { buildInventory, rootsFromEnv } from './inventory.js';
 
 const COMMANDS = {
@@ -56,7 +57,20 @@ async function scan(args) {
   return 0;
 }
 
-const HANDLERS = { init, doctor, scan };
+async function ingest(args) {
+  noOptions(args);
+  let input;
+  try {
+    input = await readStdin();
+  } catch (err) {
+    await logLine(['-', '-', err.code || err.name]).catch(() => {});
+    return 0;
+  }
+  await runHook(input);
+  return 0;
+}
+
+const HANDLERS = { init, doctor, scan, ingest };
 
 export async function main(argv = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({

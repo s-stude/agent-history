@@ -8,6 +8,14 @@ export function databaseUrl(env = process.env) {
   return env.AGENT_HISTORY_DATABASE_URL || DEFAULT_DATABASE_URL;
 }
 
+const KEPT_PARAMS = new Set(['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'host', 'port']);
+
+export function normalizeUrl(connectionString) {
+  const url = new URL(connectionString);
+  for (const key of [...url.searchParams.keys()]) if (!KEPT_PARAMS.has(key)) url.searchParams.delete(key);
+  return url.toString();
+}
+
 export function knexConfig(
   connectionString,
   { connectionTimeoutMillis = 3000, statementTimeout = 30000, migrationsDirectory = MIGRATIONS_DIR } = {},
@@ -15,7 +23,7 @@ export function knexConfig(
   return {
     client: 'pg',
     connection: {
-      connectionString,
+      connectionString: normalizeUrl(connectionString),
       connectionTimeoutMillis,
       statement_timeout: statementTimeout,
       application_name: 'agent-history',
@@ -23,6 +31,7 @@ export function knexConfig(
     pool: { min: 0, max: 1 },
     acquireConnectionTimeout: connectionTimeoutMillis + 2000,
     migrations: { directory: migrationsDirectory, loadExtensions: ['.js'] },
+    log: { warn() {}, error() {}, deprecate() {}, debug() {} },
   };
 }
 

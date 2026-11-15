@@ -73,15 +73,15 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] **(user)** After `setup database`, verify the reader role can `SELECT` and that `INSERT` fails
 
 ### Task 5: Sanitizer
-- [ ] Port the Python patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines; key patterns must not start or end inside a longer token and are length-capped
-- [ ] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
-- [ ] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
-- [ ] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
-- [ ] Remove NUL (`\u0000`) from stored strings; PostgreSQL `text` rejects it
-- [ ] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
-- [ ] Add false-positive tests: git hashes, UUIDs, file paths, base64 images and long base64url blobs containing `sk-` are left intact
-- [ ] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
-- [ ] Re-run the real-data false-positive check (50 random sessions, label counts only) and compare with the Python result: 4 `env` redactions, 0 key-pattern hits
+- [x] Port the Python patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines; key patterns must not start or end inside a longer token and are length-capped
+- [x] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
+- [x] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
+- [x] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
+- [x] Remove NUL (`\u0000`) from stored strings; PostgreSQL `text` rejects it
+- [x] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
+- [x] Add false-positive tests: git hashes, UUIDs, file paths, base64 images and long base64url blobs containing `sk-` are left intact
+- [x] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
+- [x] Re-run the real-data false-positive check (50 random sessions, label counts only; `scripts/redaction-sample.js`) and compare with the Python result: 4 `env` redactions, 0 key-pattern hits. First Node run: 87 and 15 `env` hits. A shape-only breakdown over all data (variable name side and value class, no values printed) showed most were references (`KEY: config.x`, `${VAR}`, `process.env.X`, `<placeholder>`). Reference-valued assignments are now kept; opaque values are still redacted. After: 3 runs of 50 sessions (58,055 lines) gave 6, 0, 0 `env` and 0 key-pattern hits. Known limit: a dotted, letters-only secret (`my.secret.pass`) is treated as a reference
 
 ### Task 6: Claude Code parser
 - [ ] Prompts: `user` lines with human text only; tool-result blocks inside `user` lines become `kind=tool_result`, not prompts

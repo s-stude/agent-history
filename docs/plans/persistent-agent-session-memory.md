@@ -1,110 +1,146 @@
 # Plan: Persistent Agent Session Memory
 
-Design: [Implementation Plan](../Persistent%20Agent%20Session%20Memory%20—%20Implementation%20Plan.md) · [Proposal](../Persistent%20Agent%20Session%20Memory%20—%20Proposal.md)
+Design: [Design Plan](../Persistent%20Agent%20Session%20Memory%20—%20Design%20Plan.md) · [Proposal](../Persistent%20Agent%20Session%20Memory%20—%20Proposal.md)
+
+Rule for every task: destructive tests (corruption, cleanup, moved or replaced files) run against isolated test homes and DBs under `./tmp/`, never against `~/.claude`, `~/.codex` or `~/.agent-history`.
 
 ## Validation Commands
 - `python3 -m pytest -q`
-- `python3 -m agent_history --help`
-- `python3 -m agent_history doctor`
+- `agent-history --help`
+- `agent-history doctor`
 
 ### Task 1: Safety net against transcript cleanup
-- [ ] Set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json` (not 0; confirm in Claude Code docs that 0 does not disable transcripts)
-- [ ] Optionally mirror raw transcripts: `rsync -a ~/.claude/projects/ ~/.agent-history/raw/claude/`
+- [ ] Confirm in Claude Code docs that `cleanupPeriodDays: 0` does not disable transcripts; then set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json`
+- [ ] Optionally mirror raw transcripts to `~/.agent-history/raw/` (`claude/`, `codex/sessions/`, `codex/archived_sessions/`); create `~/.agent-history` and `raw/` with mode 0700; keep out of cloud sync
 - [ ] Verify `jq .cleanupPeriodDays ~/.claude/settings.json` prints 36500
 - [ ] Verify the `*.jsonl` count in `~/.claude/projects` does not drop after starting a new `claude` session
-- [ ] If mirrored, verify source and mirror `*.jsonl` counts match
+- [ ] If mirrored, verify per-tool file counts (`.jsonl` and `.jsonl.zst`) match source and `stat -f %Lp ~/.agent-history/raw` prints 700
 
-### Task 2: Project skeleton
-- [ ] Create `agent_history/` package with `__main__.py`, `cli.py`, `db.py`, `redact.py`, `parsers/claude.py`, `parsers/codex.py`
+### Task 2: Project skeleton and install
+- [ ] Create `agent_history/` package with `__main__.py`, `cli.py`, `db.py`, `inventory.py`, `redact.py`, `ingest.py`, `parsers/claude.py`, `parsers/codex.py`
 - [ ] Add CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor` (stubs)
-- [ ] Add `pyproject.toml` with a `agent-history` console script, stdlib only, pytest as dev dependency
-- [ ] Add `tests/` and `tests/fixtures/`
-- [ ] Add `.gitignore` covering `*.db`, `tmp/`, `__pycache__/`
-- [ ] Verify `python3 -m agent_history --help` lists all subcommands and `pytest` runs
+- [ ] Add `pyproject.toml`: `requires-python = ">=3.14"`, stdlib only, `agent-history` console script, pytest as dev dependency
+- [ ] Install with `python3 -m pip install --user -e .` (or `pipx install -e .`); record the absolute interpreter and `agent-history` paths in the README for hooks and launchd
+- [ ] Add `.gitignore`: `*.db`, `*.db-wal`, `*.db-shm`, `*.db-journal`, `tmp/`, `__pycache__/`, `.peer-chats/`, `tests/private/`
+- [ ] Add a CLI smoke test (`--help` exits 0 and lists all subcommands) so pytest never collects zero tests
+- [ ] Verify `agent-history --help` runs from a fresh shell and pytest passes
 
-### Task 3: Schema and database setup
-- [ ] Create `sessions` (id, tool, project, cwd, started_at, ended_at, title, transcript_path, parent_session_id, is_sidechain)
-- [ ] Create `messages` (id, session_id, ts, role, text, tool_name, files, raw, parser_version)
+### Task 3: Source inventory and identity contract
+- [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
+- [ ] Read `.zst` with `compression.zstd.open` as a stream
+- [ ] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
+- [ ] Define message identity: Claude line `uuid`; Codex `(session_id, decompressed line number)` plus content hash
+- [ ] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash
+- [ ] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
+- [ ] Classify unsupported layouts (unknown extension, paginated/migrated rollout layout, unreadable file) instead of skipping silently
+- [ ] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
+- [ ] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine
+
+### Task 4: Schema, private files, diagnostics
+- [ ] Create `sessions` (id, tool, native_id, parent_id, agent_id, is_sidechain, project, cwd, started_at, ended_at, title, source_path, cli_version)
+- [ ] Create `messages` (id, session_id, ts, role, phase, kind, text, tool_name, files, provisional, raw, source_path, source_line, content_hash, parser_version)
 - [ ] Create FTS5 `messages_fts` over `messages.text` with insert/update/delete sync triggers
-- [ ] Create `ingest_state` (transcript_path, offset, inode, size, updated_at)
-- [ ] Track schema version with `PRAGMA user_version`
-- [ ] Open DB at `~/.agent-history/history.db` (overridable via `AGENT_HISTORY_DB`) with WAL, `busy_timeout=5000`, file mode 600
-- [ ] Add tests: `init` twice is idempotent; `journal_mode` is `wal`; file mode is 600; FTS `MATCH` finds an inserted row
-- [ ] Verify the system `sqlite3` CLI can run an FTS5 `MATCH` query on the DB; if not, note `python3 -c` fallback for Task 11
+- [ ] Create `sources` (path, session_id, encoding, content_hash, inode, size, offset, last_line, status, updated_at) for coverage and checkpoints
+- [ ] Create `ingest_errors` (ts, source_path, line, error_class, detail without message text) and `unknown_types` (tool, type, subtype, count)
+- [ ] Track schema version with `PRAGMA user_version`; refuse a DB with a newer version than the code knows
+- [ ] DB path `~/.agent-history/history.db`, overridable by `AGENT_HISTORY_DB`; parent dir created 0700; DB and WAL/SHM files 0600 via umask
+- [ ] Open with WAL and `busy_timeout=5000`
+- [ ] Add tests: `init` twice is idempotent; `journal_mode` is `wal`; DB, `-wal`, `-shm` and parent dir modes are 600/600/600/700 for both default and custom paths; FTS finds inserted, reflects updated, drops deleted rows; newer `user_version` is refused
+- [ ] Verify whether the system `sqlite3` CLI can run an FTS5 `MATCH` on the DB; record the result for the Task 13 pointer
 
-### Task 4: Claude Code parser
-- [ ] Parse `user` lines into prompts and `assistant` lines into text answers and tool calls
-- [ ] Extract tool names and file paths from tool inputs; trim tool results to 500 characters
-- [ ] Skip noise types (`attachment`, `mode`, `permission-mode`, `session-owner`, `bridge-session`, `atis-latch`, …); count unknown types instead of failing
-- [ ] Detect subagent transcripts (`subagents/` path, `isSidechain`) and set `parent_session_id`
-- [ ] Derive `project` from `cwd`, `started_at` / `ended_at` from timestamps
-- [ ] Store the original line in `raw`
-- [ ] Add anonymised real-line fixtures and golden-file tests
+### Task 5: Sanitizer
+- [ ] Redact patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines
+- [ ] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
+- [ ] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
+- [ ] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
+- [ ] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
+- [ ] Add false-positive tests: git hashes, UUIDs, file paths, base64 images are left intact
+- [ ] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
+
+### Task 6: Claude Code parser
+- [ ] Prompts: `user` lines with human text only; tool-result blocks inside `user` lines become `kind=tool_result`, not prompts
+- [ ] Assistant text answers, tool names, file paths from tool inputs; tool results trimmed to 500 chars after sanitizing
+- [ ] Skip noise types (`attachment`, `mode`, `permission-mode`, `session-owner`, `bridge-session`, `atis-latch`, …); count unknown types and subtypes
+- [ ] Children: use identity from Task 3, set `parent_id`, `agent_id`, `is_sidechain`
+- [ ] Derive `project` from `cwd`; `started_at` / `ended_at` from timestamps
+- [ ] `raw`: sanitized line truncated to 2 KB, with source path and line number
+- [ ] Add anonymised fixtures and golden tests: prompt vs tool-result wrapper counts, parent + 2 children, unknown type counted
 - [ ] Verify parser tests pass
 
-### Task 5: Codex parser
-- [ ] Read `session_meta` for session id and `cwd`
-- [ ] Parse `response_item` lines (`message`, `custom_tool_call`, `custom_tool_call_output`, function calls); skip `reasoning`, `token_count` and other `event_msg` noise
-- [ ] Build stable message ids from file path and line offset
-- [ ] Add anonymised fixtures and golden-file tests
+### Task 7: Codex parser
+- [ ] Read `session_meta` for id, `cwd`, `cli_version`, `source`, parent/fork info
+- [ ] Canonical source: `response_item` records. `message` keeps `role` and `phase` (commentary vs final); `developer` and injected context are not user prompts
+- [ ] Tool calls: `function_call` (string `arguments`) and `custom_tool_call` (`input`); correlate outputs by `call_id`; extract tool name and file paths; trim outputs to 500 chars after sanitizing
+- [ ] Skip `reasoning`, `token_count` and `event_msg` records that mirror response items; keep turn ids and lifecycle timestamps as metadata
+- [ ] Handle compaction, resume and fork without reinserting replayed history
+- [ ] Count unknown types including `response_item` subtypes
+- [ ] Add anonymised fixtures (plain and `.zst`) and golden tests: call/output pairing, phases, no double count from `event_msg.item_completed` / `task_complete`, a resumed session
 - [ ] Verify parser tests pass
 
-### Task 6: Redaction
-- [ ] Add regex list: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks, `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines
-- [ ] Apply redaction to `text`, `files` and `raw` before any write
-- [ ] Add a fixture seeded with 20 fake secrets; test that none are found in the DB after ingest
-- [ ] Add a false-positive test: git hashes, UUIDs and file paths are left intact
+### Task 8: Incremental ingest with atomic checkpoints
+- [ ] Stream sources line by line; stop at the last newline-terminated line; tolerate a partial UTF-8 sequence at the end
+- [ ] Write rows in bounded batches (e.g. 500 lines); each batch commits rows and the `sources` checkpoint in one transaction
+- [ ] Advance checkpoints with compare-and-set so a stale writer cannot move one backwards; on conflict, re-read from the newer checkpoint
+- [ ] Re-read from the start when a plain file shrank or its inode or content hash changed; upsert by message id
+- [ ] On `busy` or decode errors: bounded retries, then record in `ingest_errors` and leave the source `pending` for the next scan
+- [ ] `ingest` reads hook stdin JSON as untrusted data (`session_id`, `transcript_path`, `agent_transcript_path`, `cwd`, `turn_id`, `last_assistant_message`); paths must sit under a known root
+- [ ] Store `last_assistant_message` as a provisional row; replace it when the matching transcript record arrives (Codex by `turn_id`, Claude by last assistant reply after the turn's prompt); two identical real answers both survive
+- [ ] Tests with exact expected rows and checkpoints: chunked vs one-shot ingest; repeated ingest; crash between batches; 2 ingesters on the same file while it grows; partial line and partial UTF-8; transcript delayed then arriving; duplicate hook calls; plain file later replaced by its `.zst` copy; truncated and replaced file; 10 concurrent writers on different sessions
+- [ ] Persistence check: ingest the Task 5 seeded fixture; no seeded secret appears in `messages`, `messages_fts`, `sessions`, `raw` or the log
 - [ ] Verify tests pass
 
-### Task 7: Incremental ingest
-- [ ] Read each transcript from the saved byte offset; stop at the last newline-terminated line
-- [ ] Re-read from the start when the file shrank or its inode changed
-- [ ] Upsert messages by id; one short transaction per ingest
-- [ ] `ingest` reads hook stdin JSON (`session_id`, `transcript_path`, `cwd`, `last_assistant_message`) and treats it as untrusted
-- [ ] Use `last_assistant_message` when the transcript has not yet caught up
-- [ ] Add tests: 5-chunk ingest equals one-shot ingest; repeated ingest leaves row counts unchanged; 10 concurrent writer processes raise no `database is locked`
-- [ ] Verify tests pass
+### Task 9: Backfill via scan
+- [ ] `scan` walks the Task 3 inventory; flags `--tool`, `--changed-since-last`, `--dry-run`; resumable from `sources` checkpoints after interruption
+- [ ] Set budgets before running: peak memory < 300 MB, full scan < 30 min, DB < 2 GB; revise only with a written reason
+- [ ] Run `agent-history scan` over all existing transcripts, measuring peak memory (`/usr/bin/time -l`), duration and DB size
+- [ ] While the scan runs, ingest a live turn and record its latency
+- [ ] Verify unique logical sessions in the DB equal the inventory, with empty, malformed, unsupported and duplicate sources listed separately
+- [ ] Verify for 3 random Claude sessions that prompt counts match `jq` over `type=="user"` lines whose content is human text (not `tool_result`), and for 3 Codex sessions that user `message` counts match
+- [ ] Verify no seeded or known real key prefixes (`sk-ant-`, `ghp_`, `AKIA`) match in the DB outside `[REDACTED]`
+- [ ] Record measured memory, time, size and live-ingest latency in the design doc
 
-### Task 8: Backfill via scan
-- [ ] `scan` walks `~/.claude/projects` and `~/.codex/sessions` and ingests every transcript; `--tool` and `--changed-since-last` flags
-- [ ] Run `python3 -m agent_history scan` over all existing transcripts
-- [ ] Verify DB session count equals the number of transcript files on disk, per tool
-- [ ] Verify for 3 random sessions that the user-prompt count matches a `jq` count over the JSONL
-- [ ] Record DB size and scan time in the design doc
+### Task 10: Doctor command
+- [ ] Report per tool: sources missing from the DB, partial sources (checkpoint behind readable end), stale sources (not updated after their file changed), unsupported layouts, pending retries, provisional rows older than 10 minutes
+- [ ] Report parse errors, unknown types, last ingest time, DB size and file modes
+- [ ] Exit non-zero when anything above is non-empty, so it can gate checks
+- [ ] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row
+- [ ] Verify `agent-history doctor` exits 0 after Task 9
 
-### Task 9: Doctor command
-- [ ] Report transcripts on disk missing from the DB, last ingest time, parse error count, unknown line types, DB size
-- [ ] Add a test with a fixture tree where one transcript is not ingested
-- [ ] Verify `python3 -m agent_history doctor` reports 0 missing and 0 parse errors after Task 8
+### Task 11: Hooks and recovery scan
+- [ ] Claude Code `~/.claude/settings.json`: `Stop` and `SubagentStop` (`async: true`) run the absolute `agent-history ingest` path; `SessionStart` runs `scan --changed-since-last`; command is a fixed string with quoted absolute paths, stdin never interpolated into shell
+- [ ] Codex `~/.codex/hooks.json`: `Stop`, `SubagentStop`, `SessionStart` the same way; review and trust them via `/hooks`
+- [ ] Probe Codex 0.163 with a logging hook in an isolated `CODEX_HOME` to record the real stdin payload and which fields are null
+- [ ] Add a launchd agent running `scan --changed-since-last` every 15 minutes, covering interrupted turns, immediate exits and missed hooks without a new session
+- [ ] Hook failures go to `~/.agent-history/ingest.log` (0600) and `ingest_errors`, never to the session
+- [ ] Verify `claude -p "reply with the single word: kumquat-<random>"` (prompt does not contain the reply) lands with the assistant reply `kumquat-<random>` as a non-provisional row within 60 s
+- [ ] Verify a subagent run in both tools produces a child session linked to its parent
+- [ ] Verify recovery: kill a session mid-turn and exit immediately after a turn; the launchd scan captures both within 15 minutes and `doctor` exits 0
+- [ ] Verify visible overhead: 10 runs each of `claude -p` with hooks enabled vs disabled; median foreground difference < 50 ms; ingest latency reported separately
+- [ ] Verify with a corrupted DB in an isolated test home: the session completes and the error is in the log and visible to `doctor`
+- [ ] Repeat the capture and overhead checks with Codex
 
-### Task 10: Hooks
-- [ ] Add Claude Code `Stop` hook (`async: true`) running `agent-history ingest`, exec form with quoted paths
-- [ ] Add Claude Code `SessionStart` hook running `agent-history scan --changed-since-last`
-- [ ] Write hook errors to `~/.agent-history/ingest.log`; never fail the session
-- [ ] Check Codex 0.163 hook support and event names; add `~/.codex/hooks.json`, or fall back to a launchd `scan` job
-- [ ] Verify `claude -p "say the word pelican"` lands in the DB with that session id within one turn
-- [ ] Verify `time agent-history ingest < tests/fixtures/stop_stdin.json` is well under 50 ms
-- [ ] Verify a corrupted DB does not break a session and the error appears in the log
-- [ ] Repeat the pelican check with Codex
-
-### Task 11: Markdown export (optional)
-- [ ] `export` writes `~/.agent-history/md/<project>/<date>-<id>.md` from DB rows
+### Task 12: Markdown export (optional)
+- [ ] `export` writes `~/.agent-history/md/<project>/<date>-<id>.md` from sanitized DB rows; directories 0700, files 0600
 - [ ] Run export after each ingest for the touched session
-- [ ] Verify `.md` file count equals session count and `rg pelican ~/.agent-history/md` finds the Task 10 session
+- [ ] Verify `.md` count equals session count, `rg kumquat ~/.agent-history/md` finds the Task 11 session, and no seeded secret appears in exports
 
-### Task 12: Discovery pointer and recall test
-- [ ] Add the 4-line "Past sessions" pointer to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`
-- [ ] Write 10 recall test questions from real history, each with its expected session id, in `tests/recall_cases.md`
+### Task 13: Discovery pointer and recall test
+- [ ] Generate the "Past sessions" pointer from config: actual DB path, the query tool that works (system `sqlite3` or a tested `python3 -c` example from Task 4), markdown path only if export is enabled
+- [ ] Pointer tells the agent to show dates and prefer newer sessions when decisions conflict
+- [ ] Add it to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`
+- [ ] Write 10 recall questions from real history with expected session ids in `tests/private/recall_cases.md` (git-ignored, 0600)
 - [ ] Run each question in a fresh session; record queries used and whether the right session was found
 - [ ] Verify at least 8 of 10 found in 3 queries or fewer; if not, add a `/recall` skill and re-run
+- [ ] Verify timed queries by date range, project, file path and keyword each return in < 1 s on the full DB
 
-### Task 13: Retrospective skill
-- [ ] Write a skill that pulls a project's sessions for a date range and summarises decisions, reversals and open threads with dates and session ids
-- [ ] Run it on a busy project over 30 days
-- [ ] Verify by hand that every cited session id and date exists in the DB
+### Task 14: Retrospective skill
+- [ ] Write a skill that pulls a project's sessions for a date range and summarises decisions, reversals and open threads, each with date, session id and a short quote
+- [ ] Run it on a busy project over 30 days in one request
+- [ ] Verify by hand that each listed decision and reversal is supported by the quoted content in the cited session, and that later reversals supersede earlier decisions
 
-### Task 14: Maintenance and 30-day check
-- [ ] Add a monthly launchd job running `PRAGMA optimize` and `VACUUM`
-- [ ] Move an ingested transcript out of `~/.claude/projects` to simulate cleanup
-- [ ] Verify it is still fully searchable and `doctor` still reports the session
-- [ ] After a week of normal use, verify `doctor` shows 0 missing sessions
+### Task 15: Maintenance and retention
+- [ ] Add a monthly launchd job running `PRAGMA optimize` and `VACUUM`; ingest during maintenance retries and recovers
+- [ ] Test retention in an isolated `CLAUDE_CONFIG_DIR`: an ingested transcript with mtime aged past a short `cleanupPeriodDays` is deleted by Claude Code's own cleanup, and stays fully searchable in the DB
+- [ ] Verify an ingest that hits `VACUUM` contention is recorded and recovered by the next scan
+- [ ] Verify `doctor` exits 0 after a week of normal use
+- [ ] Record the real 30-day observation in the design doc as pending until the oldest ingested transcript has actually been cleaned up and is still searchable

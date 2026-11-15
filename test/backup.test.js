@@ -127,3 +127,20 @@ test('a failed pg_restore removes the database it created, so a retry is possibl
     await admin.destroy();
   }
 });
+
+test('concurrent backups at full retention both succeed; a concurrent failure does not rotate', async (t) => {
+  const h = await useTestDb(t);
+  if (!h) return;
+  const dir = await tmpDir(t);
+  for (let i = 1; i <= 8; i++) await writeFile(path.join(dir, `2026-01-0${i}T00-00-00Z.dump`), 'old');
+  const results = await Promise.allSettled([
+    backup(h.url, dir),
+    backup(h.url, dir),
+    backup('postgresql://localhost:1/agent_history_test_none', dir),
+  ]);
+  assert.deepEqual(results.map((r) => r.status), ['fulfilled', 'fulfilled', 'rejected']);
+  const names = (await readdir(dir)).filter((n) => n.endsWith('.dump'));
+  for (const r of results.slice(0, 2)) assert.ok(names.includes(path.basename(r.value.file)));
+  assert.ok(names.length >= 8 && names.length <= 9, String(names.length));
+  assert.equal((await readdir(dir)).filter((n) => n.includes('.partial')).length, 0);
+});

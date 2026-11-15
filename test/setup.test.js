@@ -160,3 +160,40 @@ test('generated shell arguments survive spaces, quotes, dollars and backticks li
   const { stdout } = await promisify(execFile)('/bin/sh', ['-c', `set -- ${line}; printf '%s\n' "$1"`]);
   assert.equal(stdout.trim(), '/fake/$(printf SENTINEL)/node');
 });
+
+test('root precedence: AGENT_HISTORY_* env, then native tool homes, then saved config, then defaults', async (t) => {
+  const dir = await tmpDir(t);
+  const hist = path.join(dir, 'hist');
+  await mkdir(hist, { recursive: true });
+  await writeFile(path.join(hist, 'config.json'), JSON.stringify({ roots: { claudeProjects: '/saved/claude', codexSessions: '/saved/codex', codexArchived: '/saved/arch' } }));
+  const base = { AGENT_HISTORY_HOME: hist };
+  assert.equal(rootsFromEnv(base).claudeProjects, '/saved/claude');
+  assert.equal(rootsFromEnv({ ...base, CLAUDE_CONFIG_DIR: '/isolated/claude' }).claudeProjects, '/isolated/claude/projects');
+  assert.equal(rootsFromEnv({ ...base, CODEX_HOME: '/isolated/codex' }).codexArchived, '/isolated/codex/archived_sessions');
+  assert.equal(rootsFromEnv({ ...base, CLAUDE_CONFIG_DIR: '/isolated/claude', AGENT_HISTORY_CLAUDE_PROJECTS: '/explicit' }).claudeProjects, '/explicit');
+  assert.equal(rootsFromEnv({}, '/h', { useSaved: false }).codexSessions, '/h/.codex/sessions');
+});
+
+test('setup without --home honours AGENT_HISTORY_HOME and the effective roots; a clean job env reads them back', async (t) => {
+  const dir = await tmpDir(t);
+  const env = {
+    AGENT_HISTORY_HOME: path.join(dir, 'custom-history'),
+    CLAUDE_CONFIG_DIR: path.join(dir, 'claude-home'),
+    CODEX_HOME: path.join(dir, 'codex-home'),
+    AGENT_HISTORY_CLAUDE_PROJECTS: path.join(dir, 'transcripts'),
+    AGENT_HISTORY_CODEX_SESSIONS: path.join(dir, 'codex-sessions'),
+    AGENT_HISTORY_CODEX_ARCHIVED: path.join(dir, 'codex-archive'),
+  };
+  const L = layout({ env });
+  assert.equal(L.historyHome, env.AGENT_HISTORY_HOME);
+  assert.equal(L.claudeSettings, path.join(env.CLAUDE_CONFIG_DIR, 'settings.json'));
+  await setup('hooks', { env, apply: true, node: '/n', url: 'postgresql://localhost:6543/custom_history', log: () => {} });
+  const clean = { AGENT_HISTORY_HOME: env.AGENT_HISTORY_HOME };
+  assert.deepEqual(rootsFromEnv(clean), {
+    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS,
+    codexSessions: env.AGENT_HISTORY_CODEX_SESSIONS,
+    codexArchived: env.AGENT_HISTORY_CODEX_ARCHIVED,
+  });
+  assert.equal(databaseUrl(clean), 'postgresql://localhost:6543/custom_history');
+  await readFile(path.join(env.CODEX_HOME, 'hooks.json'), 'utf8');
+});

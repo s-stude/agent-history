@@ -32,7 +32,7 @@ export async function backup(url, dir, { now = new Date(), keep = KEEP_BACKUPS, 
   const dumps = (await readdir(dir)).filter((n) => DUMP_NAME.test(n)).sort();
   const removed = [];
   for (const old of dumps.slice(0, Math.max(0, dumps.length - keep))) {
-    await rm(path.join(dir, old));
+    await rm(path.join(dir, old), { force: true });
     removed.push(old);
   }
   return { file: final, removed };

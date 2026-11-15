@@ -14,14 +14,19 @@ const CLAUDE_AGENT = /^agent-(?<aid>[0-9a-zA-Z_-]+)\.jsonl$/;
 const CLAUDE_METADATA = /^(?:sessions-index\.json|agent-[0-9a-zA-Z_-]+\.meta\.json)$/;
 const CLAUDE_UUID_PREFIX = new RegExp(`^${UUID}(?:\\.|$)`);
 
-export function rootsFromEnv(env = process.env, home = homedir()) {
-  const saved = loadConfig(env).roots ?? {};
-  const claude = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
-  const codex = env.CODEX_HOME || path.join(home, '.codex');
+export function rootsFromEnv(env = process.env, home = homedir(), { useSaved = true } = {}) {
+  const saved = useSaved ? (loadConfig(env).roots ?? {}) : {};
+  const claude = env.CLAUDE_CONFIG_DIR ? path.join(env.CLAUDE_CONFIG_DIR, 'projects') : null;
+  const codex = env.CODEX_HOME || null;
   return {
-    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS || saved.claudeProjects || path.join(claude, 'projects'),
-    codexSessions: env.AGENT_HISTORY_CODEX_SESSIONS || saved.codexSessions || path.join(codex, 'sessions'),
-    codexArchived: env.AGENT_HISTORY_CODEX_ARCHIVED || saved.codexArchived || path.join(codex, 'archived_sessions'),
+    claudeProjects: env.AGENT_HISTORY_CLAUDE_PROJECTS || claude || saved.claudeProjects || path.join(home, '.claude', 'projects'),
+    codexSessions:
+      env.AGENT_HISTORY_CODEX_SESSIONS || (codex && path.join(codex, 'sessions')) || saved.codexSessions || path.join(home, '.codex', 'sessions'),
+    codexArchived:
+      env.AGENT_HISTORY_CODEX_ARCHIVED ||
+      (codex && path.join(codex, 'archived_sessions')) ||
+      saved.codexArchived ||
+      path.join(home, '.codex', 'archived_sessions'),
   };
 }
 

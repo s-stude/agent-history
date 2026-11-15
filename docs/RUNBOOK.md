@@ -87,15 +87,15 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.backup
   Check that `session_id`, `transcript_path`, `turn_id` and `last_assistant_message` are present (or note which are null), and that the `hooks.json` shape above is the one Codex 0.163 reads.
 - Check capture in a real interactive session (one-shot `claude -p` / `codex exec` cancel unfinished async hooks at exit, so they cannot prove capture):
   ```sh
-  "$REPO/scripts/capture-check.sh" claude   # prints a prompt with a random word; send it in an interactive claude session
-  "$REPO/scripts/capture-check.sh" codex    # same for codex
+  "$NODE" "$REPO/scripts/capture-check.js" claude   # starts claude with a known --session-id and a random-word prompt
+  "$NODE" "$REPO/scripts/capture-check.js" codex    # starts codex; the session is found by its rollout containing the word
   ```
-  Each must print `PASS: captured in <session id>`: a final, non-provisional answer equal to the word, in a session updated after the script started.
+  Let the agent answer, then exit the session normally. `PASS` means a final, non-provisional row equal to the word, in exactly that session, within 60 s of the answer's transcript timestamp (your preparation time is not counted). The reader connection comes from the saved config (`AGENT_HISTORY_READER_URL` overrides).
 - Check subagents: run one subagent task in each tool, then
   `"$PGBIN/psql" -d agent_history -c "SELECT id, parent_id, agent_id FROM sessions WHERE parent_id IS NOT NULL ORDER BY updated_at DESC LIMIT 5"`.
 - Check recovery: kill a session mid-turn; exit right after a turn; and run one turn with Postgres.app stopped (then start it). Within 15 minutes of the server being back, `AH doctor` exits 0 and all three turns are in the DB.
 - Check the launchd job connects without a permission prompt: after its first run, `~/.agent-history/com.agent-history.scan.err.log` is empty and `AH doctor` shows no `log_after_last_ingest` warning. If Postgres.app denied it, open Postgres.app → Settings → App Permissions and allow `$NODE`.
-- Overhead: `"$REPO/scripts/overhead.sh" <some transcript.jsonl> 10` reports (1) dispatch: background fork/exec of the hook command and return, compared with the 50 ms budget; (2) worker latency: the full run, which happens in the background. `--e2e` adds `claude -p` medians with hooks on vs off as an observation only (spends 20 model calls; model/network noise dominates). Dry run on this Mac: dispatch ~5 ms, worker ~90 ms.
+- Overhead: `"$REPO/scripts/overhead.sh" <some transcript.jsonl> 10 --dispatch` measures the agent's own hook dispatch delay (probe Stop hook start minus the final answer's transcript timestamp; spends 10 model calls); this is the number for the 50 ms budget. Without `--dispatch` it only prints unbudgeted diagnostics (shell spawn ~5 ms, background worker ~90 ms on this Mac); `--e2e` adds hooks on/off medians as an observation.
 - Undo: restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`; `launchctl bootout gui/$(id -u)/com.agent-history.scan` (and `.backup`), then delete the two plists.
 
 ## 5. Tell the agents where history lives (Task 13)

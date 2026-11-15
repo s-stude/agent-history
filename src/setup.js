@@ -10,6 +10,8 @@ import { migrateWithLock } from './migrate.js';
 import { pointerText, POINTER_END, POINTER_START } from './pointer.js';
 import { readerRoleSql } from './roles.js';
 import { shellQuote } from './shell.js';
+import { rootsFromEnv } from './inventory.js';
+import { historyHome as resolveHistoryHome } from './paths.js';
 
 const run = promisify(execFile);
 export const HEAP_FLAG = '--max-old-space-size=192';
@@ -18,20 +20,23 @@ export const SCAN_LABEL = 'com.agent-history.scan';
 export const BACKUP_LABEL = 'com.agent-history.backup';
 export const MANAGED = '# agent-history:managed';
 
-export function layout({ home = homedir(), env = process.env } = {}) {
-  const claude = env.CLAUDE_CONFIG_DIR && home === homedir() ? env.CLAUDE_CONFIG_DIR : path.join(home, '.claude');
-  const codex = env.CODEX_HOME && home === homedir() ? env.CODEX_HOME : path.join(home, '.codex');
+export function layout({ home, env = process.env } = {}) {
+  const explicit = Boolean(home);
+  const base = home ?? homedir();
+  const claude = !explicit && env.CLAUDE_CONFIG_DIR ? env.CLAUDE_CONFIG_DIR : path.join(base, '.claude');
+  const codex = !explicit && env.CODEX_HOME ? env.CODEX_HOME : path.join(base, '.codex');
+  const roots = explicit
+    ? { claudeProjects: path.join(claude, 'projects'), codexSessions: path.join(codex, 'sessions'), codexArchived: path.join(codex, 'archived_sessions') }
+    : rootsFromEnv(env, base, { useSaved: false });
   return {
-    home,
+    home: base,
     claudeSettings: path.join(claude, 'settings.json'),
     claudeMd: path.join(claude, 'CLAUDE.md'),
-    claudeProjects: path.join(claude, 'projects'),
     codexHooks: path.join(codex, 'hooks.json'),
     agentsMd: path.join(codex, 'AGENTS.md'),
-    codexSessions: path.join(codex, 'sessions'),
-    codexArchived: path.join(codex, 'archived_sessions'),
-    historyHome: path.join(home, '.agent-history'),
-    launchAgents: path.join(home, 'Library', 'LaunchAgents'),
+    ...roots,
+    historyHome: explicit ? path.join(base, '.agent-history') : resolveHistoryHome(env),
+    launchAgents: path.join(base, 'Library', 'LaunchAgents'),
   };
 }
 

@@ -1,37 +1,59 @@
 #!/usr/bin/env bash
-# Hook cost, measured three separate ways:
-#   1. dispatch: fork/exec of the exact hook command in the background and return (what an async hook costs the session);
-#      this is the number compared with the 50 ms budget
-#   2. worker latency: the hook command run to completion (happens in the background; reported, not budgeted)
-#   3. --e2e only, observation: `claude -p` medians with hooks on vs off (spends 2 x runs model calls; model/network noise
-#      dominates, so this cannot verify the budget)
-# Usage: scripts/overhead.sh <transcript.jsonl> [runs] [--e2e]
+# Hook cost diagnostics.
+#   default: (a) shell-spawn diagnostic: bash backgrounding the hook argv (NOT the agent's dispatch path; unbudgeted)
+#            (b) worker latency: the hook command run to completion (runs in the background; unbudgeted)
+#   --dispatch (Claude, spends <runs> model calls): the agent's own hook dispatch delay, independent of model time:
+#            a probe Stop hook records its start time; delay = probe start - timestamp of the final assistant message
+#            in that session's transcript. This is the measurement for the 50 ms budget.
+#   --e2e    (spends 2 x <runs> model calls): claude -p medians with hooks on vs off, observation only.
+# Usage: scripts/overhead.sh <transcript.jsonl> [runs] [--dispatch|--e2e]
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="${NODE:-$(command -v node)}"
 TRANSCRIPT="${1:?transcript path}"
 RUNS="${2:-10}"
-E2E="${3:-}"
+MODE="${3:-}"
 PAYLOAD="$(printf '{"session_id":"overhead-check","transcript_path":"%s"}' "$TRANSCRIPT")"
 HOOK=("$NODE" --max-old-space-size=192 "$REPO/bin/agent-history" ingest)
 
 ms() { perl -MTime::HiRes=time -e 'printf "%.1f\n", time*1000'; }
 median() { sort -n | awk '{a[NR]=$1} END {print (NR%2 ? a[(NR+1)/2] : (a[NR/2]+a[NR/2+1])/2)}'; }
 
-echo "1. dispatch (background fork/exec + return), $RUNS runs:"
+echo "a. shell-spawn diagnostic (bash & of the hook argv; not the agent's dispatch path, unbudgeted), $RUNS runs:"
 for _ in $(seq "$RUNS"); do
   t0=$(ms); printf '%s' "$PAYLOAD" | "${HOOK[@]}" >/dev/null 2>&1 & t1=$(ms); wait
   echo "$t1 - $t0" | bc
-done | median | xargs -I{} echo "   median {} ms (budget 50 ms)"
+done | median | xargs -I{} echo "   median {} ms"
 
-echo "2. worker latency (run to completion, background), $RUNS runs:"
+echo "b. worker latency (run to completion, in the background; unbudgeted), $RUNS runs:"
 for _ in $(seq "$RUNS"); do
   t0=$(ms); printf '%s' "$PAYLOAD" | "${HOOK[@]}"; t1=$(ms)
   echo "$t1 - $t0" | bc
-done | median | xargs -I{} echo "   median {} ms (not on the foreground path)"
+done | median | xargs -I{} echo "   median {} ms"
 
-if [ "$E2E" = "--e2e" ]; then
-  echo "3. observation only: claude -p medians, hooks on vs off ($RUNS runs each)"
+if [ "$MODE" = "--dispatch" ]; then
+  WORK="$(mktemp -d)"; PROBE="$WORK/probe.txt"
+  cat > "$WORK/settings.json" <<JSON
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"perl -MTime::HiRes=time -e 'printf \"%.1f\\\\n\", time*1000' >> $PROBE"}]}]}}
+JSON
+  echo "c. agent dispatch delay (probe Stop hook start - final answer timestamp), $RUNS runs:"
+  for _ in $(seq "$RUNS"); do
+    uuid="$("$NODE" -e 'console.log(crypto.randomUUID())')"
+    : > "$PROBE"
+    claude -p "Reply with OK" --session-id "$uuid" --settings "$WORK/settings.json" >/dev/null
+    file="$(ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$uuid".jsonl 2>/dev/null | head -1)"
+    [ -n "$file" ] && [ -s "$PROBE" ] || { echo "   (run skipped: transcript or probe missing)" >&2; continue; }
+    answered="$("$NODE" -e '
+      const lines = require("fs").readFileSync(process.argv[1], "utf8").trim().split("\n").map((l) => { try { return JSON.parse(l); } catch { return {}; } });
+      const last = lines.filter((r) => r.type === "assistant").pop();
+      console.log(new Date(last.timestamp).getTime());' "$file")"
+    echo "$(head -1 "$PROBE") - $answered" | bc
+  done | median | xargs -I{} echo "   median {} ms (budget 50 ms)"
+  rm -rf "$WORK"
+fi
+
+if [ "$MODE" = "--e2e" ]; then
+  echo "d. observation only: claude -p medians, hooks on vs off ($RUNS runs each)"
   OFF="$(mktemp)"; echo '{"disableAllHooks": true}' > "$OFF"
   for mode in on off; do
     for _ in $(seq "$RUNS"); do

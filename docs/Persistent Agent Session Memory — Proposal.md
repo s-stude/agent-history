@@ -35,7 +35,7 @@ Agent history disappears, and what survives cannot be searched across projects.
 
 A small ingest script, called by hooks after every turn, copies each session into one SQLite file; the agent reads it only when a question needs history.
 
-&#91;embedded content: capture and recall flow · 8 steps\]
+![img.png](img.png)
 
 The top row runs on every turn without anyone noticing; the bottom row runs only when you ask about the past.
 

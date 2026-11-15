@@ -82,15 +82,13 @@ async function scanCommand(args) {
 }
 
 async function ingest(args) {
-  noOptions(args);
-  let input;
   try {
-    input = await readStdin();
+    noOptions(args);
+    const input = await readStdin();
+    await runHook(input);
   } catch (err) {
     await logLine(['-', '-', err.code || err.name]).catch(() => {});
-    return 0;
   }
-  await runHook(input);
   return 0;
 }
 

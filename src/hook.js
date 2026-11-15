@@ -61,12 +61,31 @@ function errorClass(err) {
   return err?.code || err?.name || 'Error';
 }
 
-export async function runHook(input, { env = process.env, roots = rootsFromEnv(env), url = databaseUrl(env) } = {}) {
+async function safeLog(fields, env) {
+  try {
+    await logLine(fields, env);
+  } catch {
+    // logging is best effort; the hook must never fail the session
+  }
+}
+
+export async function runHook(input, options = {}) {
+  try {
+    return await runHookUnsafe(input, options);
+  } catch (err) {
+    await safeLog(['-', '-', errorClass(err)], options.env ?? process.env);
+    return { ok: false, reason: errorClass(err) };
+  }
+}
+
+async function runHookUnsafe(input, { env = process.env, roots, url } = {}) {
+  roots ??= rootsFromEnv(env);
+  url ??= databaseUrl(env);
   let payload;
   try {
     payload = JSON.parse(input);
   } catch {
-    await logLine(['-', '-', 'invalid-hook-json'], env);
+    await safeLog(['-', '-', 'invalid-hook-json'], env);
     return { ok: false, reason: 'invalid-hook-json' };
   }
   if (!payload || typeof payload !== 'object') return { ok: false, reason: 'invalid-hook-json' };
@@ -76,13 +95,14 @@ export async function runHook(input, { env = process.env, roots = rootsFromEnv(e
   for (const p of paths) {
     const s = await sourceForPath(p, roots);
     if (s) sources.push(s);
-    else await logLine(['-', sessionId, 'path-outside-roots'], env);
+    else await safeLog(['-', sessionId, 'path-outside-roots'], env);
   }
-  const db = openDb(url);
+  let db = null;
   try {
+    db = openDb(url);
     const schema = await schemaStatus(db);
     if (schema.state !== 'current') {
-      await logLine([sources[0]?.tool, sessionId, `schema-${schema.state}`], env);
+      await safeLog([sources[0]?.tool, sessionId, `schema-${schema.state}`], env);
       return { ok: false, reason: `schema-${schema.state}` };
     }
     for (const source of sources) {
@@ -91,16 +111,15 @@ export async function runHook(input, { env = process.env, roots = rootsFromEnv(e
       } catch (err) {
         if (UNREACHABLE.has(err.code)) throw err;
         await recordError(db, { sourcePath: source.path, errorClass: errorClass(err) }).catch(() => {});
-        await logLine([source.tool, sessionId, errorClass(err)], env);
+        await safeLog([source.tool, sessionId, errorClass(err)], env);
       }
     }
     const answer = typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message : null;
     const target = sources.at(-1) ?? null;
     const tool = target?.tool ?? (payload.turn_id ? 'codex' : null);
     if (answer && tool && (target || sessionId)) {
-      const sessionKey = target?.sessionKey ?? `${tool}:${sessionId}`;
       await insertProvisional(db, {
-        sessionId: sessionKey,
+        sessionId: target?.sessionKey ?? `${tool}:${sessionId}`,
         tool,
         nativeId: target?.nativeId ?? sessionId,
         text: cleanText(answer),
@@ -112,14 +131,14 @@ export async function runHook(input, { env = process.env, roots = rootsFromEnv(e
       try {
         if (ids.length) await exportSessions(db, { root: exportRoot(env), sessionIds: ids });
       } catch (err) {
-        await logLine([sources[0]?.tool, sessionId, `export-${errorClass(err)}`], env);
+        await safeLog([sources[0]?.tool, sessionId, `export-${errorClass(err)}`], env);
       }
     }
     return { ok: true, sources: sources.length };
   } catch (err) {
-    await logLine([sources[0]?.tool, sessionId, errorClass(err)], env).catch(() => {});
+    await safeLog([sources[0]?.tool, sessionId, errorClass(err)], env);
     return { ok: false, reason: errorClass(err) };
   } finally {
-    await db.destroy().catch(() => {});
+    if (db) await db.destroy().catch(() => {});
   }
 }

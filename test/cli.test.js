@@ -89,3 +89,25 @@ test('ingest reads hook JSON from stdin and exits 0 even when the server is unre
   assert.match(log, /\tabc\t/);
   await rm(home, { recursive: true, force: true });
 });
+
+test('ingest exits 0 with a malformed URL or an unwritable history home', async () => {
+  const { spawn } = await import('node:child_process');
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises');
+  const { REPO } = await import('./helpers/tmp.js');
+  const dir = await mkdtemp(`${REPO}tmp/cli-fail-`);
+  const homeFile = `${dir}/not-a-dir`;
+  await writeFile(homeFile, 'x');
+  const cases = [
+    { AGENT_HISTORY_DATABASE_URL: 'not a url', AGENT_HISTORY_HOME: `${dir}/home` },
+    { AGENT_HISTORY_DATABASE_URL: 'postgresql://localhost:1/agent_history_test_none', AGENT_HISTORY_HOME: homeFile },
+  ];
+  for (const extra of cases) {
+    for (const input of ['{not json', JSON.stringify({ session_id: 'abc', transcript_path: '/nonexistent/x.jsonl' })]) {
+      const child = spawn(process.execPath, [BIN, 'ingest'], { env: { ...process.env, ...extra }, cwd: '/' });
+      child.stdin.end(input);
+      const code = await new Promise((r) => child.on('close', r));
+      assert.equal(code, 0, JSON.stringify(extra));
+    }
+  }
+  await rm(dir, { recursive: true, force: true });
+});

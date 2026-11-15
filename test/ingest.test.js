@@ -298,12 +298,17 @@ test('seeded secrets never reach messages, tsvector, sessions or the log', async
     { type: 'user', uuid: 's2', message: { role: 'user', content: `${S.PEM}\nDB_PASSWORD=${S.ENV_VALUE}` } },
     { type: 'assistant', uuid: 's3', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't9', name: 'Bash', input: { command: `curl -H 'Authorization: Bearer ${S.BEARER}'`, env: { api_key: S.FIELD_VALUE } } }] } },
     { type: 'user', uuid: 's4', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't9', content: JSON.stringify({ password: S.FIELD_VALUE }) }] } },
+    { type: 'custom-title', customTitle: `DB_PASSWORD=${S.ENV_VALUE}` },
+    { type: 'ai-title', aiTitle: `title ${S.SLACK}` },
+    { type: 'agent-name', agentName: `agent ${S.AWS}` },
   ].map((r) => JSON.stringify({ sessionId: PARENT, cwd: `/w/${S.AWS}/demo`, timestamp: '2026-11-01T10:00:00.000Z', ...r }));
   await write(e.claudeFile, `${secretLines.join('\n')}\n`);
   await runHook(JSON.stringify({ session_id: PARENT, transcript_path: e.claudeFile, last_assistant_message: `done ${S.GITHUB}` }), {
     env: { ...process.env, AGENT_HISTORY_HOME: home }, roots: e.roots, url: e.url,
   });
-  const dump = JSON.stringify(await e.db.raw('SELECT m.*, m.text_tsv::text AS tsv FROM messages m')) + JSON.stringify(await e.db('sessions'));
+  const dump = JSON.stringify(await e.db.raw('SELECT m.*, m.text_tsv::text AS tsv FROM messages m'))
+    + JSON.stringify(await e.db('sessions'))
+    + JSON.stringify(await e.db('sources').select('parser_state', 'path'));
   for (const secret of S.ALL) assert.ok(!dump.includes(secret), secret.slice(0, 10));
   const log = await readFile(path.join(home, 'ingest.log'), 'utf8').catch(() => '');
   for (const secret of S.ALL) assert.ok(!log.includes(secret));
@@ -354,4 +359,64 @@ test('hook: paths outside the known roots are ignored; an uninitialized DB is no
 
 test('StaleCheckpointError is exported for callers', () => {
   assert.equal(new StaleCheckpointError('x').name, 'StaleCheckpointError');
+});
+
+test('an in-place rewrite between reading and committing is caught by the next run', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  const lines = await claudeLines();
+  const oldText = `${lines.join('\n')}\n`;
+  const newText = oldText.replace('Add a retry', 'Add a RETRY');
+  await write(e.claudeFile, oldText);
+  let done = false;
+  await ingestSource(e.db, await e.source(e.claudeFile), {
+    beforeCommit: async () => {
+      if (done) return;
+      done = true;
+      await writeFile(e.claudeFile, newText);
+    },
+  });
+  await ingestSource(e.db, await e.source(e.claudeFile));
+  const row = await e.db('messages').where({ record_id: 'u-1' }).first();
+  assert.match(row.text, /RETRY/);
+  const final = await snapshot(e.db);
+  await e.db('messages').del();
+  await e.db('sessions').del();
+  await e.db('sources').del();
+  await ingestSource(e.db, await e.source(e.claudeFile));
+  assert.deepEqual(final, await snapshot(e.db));
+});
+
+test('repeated Claude hook deliveries keep one provisional row until the answer arrives', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  const now = new Date().toISOString();
+  const lines = (await claudeLines()).map((l) => l.replace(/"timestamp": ?"[^"]+"/, `"timestamp":"${now}"`));
+  await write(e.claudeFile, `${lines.slice(0, 3).join('\n')}\n`);
+  const home = path.join(e.dir, 'home');
+  const payload = JSON.stringify({ session_id: PARENT, transcript_path: e.claudeFile, last_assistant_message: 'Added retry with backoff; tests pass.' });
+  for (let i = 0; i < 3; i++) {
+    await runHook(payload, { env: { ...process.env, AGENT_HISTORY_HOME: home }, roots: e.roots, url: e.url });
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.equal((await e.db('messages').where({ provisional: true })).length, 1);
+  await appendFile(e.claudeFile, `${lines.slice(3).join('\n')}\n`);
+  await runHook(payload, { env: { ...process.env, AGENT_HISTORY_HOME: home }, roots: e.roots, url: e.url });
+  assert.equal((await e.db('messages').where({ provisional: true })).length, 0);
+});
+
+test('duplicate record keys in one batch: last record wins for any batch size', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  const mk = (text) => JSON.stringify({ type: 'user', uuid: 'dup', sessionId: PARENT, cwd: '/w/demo', timestamp: '2026-11-01T10:00:00.000Z', message: { role: 'user', content: text } });
+  await write(e.claudeFile, `${mk('first version')}\n${mk('second version')}\n`);
+  for (const batchLines of [500, 1]) {
+    await e.db('messages').del();
+    await e.db('sessions').del();
+    await e.db('sources').del();
+    await ingestSource(e.db, await e.source(e.claudeFile), { batchLines });
+    const rows = await e.db('messages').where({ record_id: 'dup' });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].text, 'second version', `batch ${batchLines}`);
+  }
 });

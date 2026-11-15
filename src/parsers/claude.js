@@ -89,9 +89,9 @@ export function createClaudeParser(source, state = null) {
     source_path: source.path,
     cli_version: null,
   };
-  let aiTitle = state?.aiTitle ?? null;
-  let customTitle = state?.customTitle ?? null;
-  let agentName = state?.agentName ?? null;
+  let aiTitle = state?.aiTitle ? cleanText(state.aiTitle) : null;
+  let customTitle = state?.customTitle ? cleanText(state.customTitle) : null;
+  let agentName = state?.agentName ? cleanText(state.agentName) : null;
   restoreSession(session, state?.session);
 
   const count = (map, key) => map.set(key, (map.get(key) || 0) + 1);
@@ -120,15 +120,15 @@ export function createClaudeParser(source, state = null) {
     if (!r || typeof r !== 'object') return [];
     const type = r.type;
     if (type === 'ai-title') {
-      if (typeof r.aiTitle === 'string') aiTitle = r.aiTitle;
+      if (typeof r.aiTitle === 'string') aiTitle = cleanText(r.aiTitle);
       return [];
     }
     if (type === 'custom-title') {
-      if (typeof r.customTitle === 'string') customTitle = r.customTitle;
+      if (typeof r.customTitle === 'string') customTitle = cleanText(r.customTitle);
       return [];
     }
     if (type === 'agent-name') {
-      if (typeof r.agentName === 'string') agentName = r.agentName;
+      if (typeof r.agentName === 'string') agentName = cleanText(r.agentName);
       return [];
     }
     if (NOISE_TYPES.has(type)) {

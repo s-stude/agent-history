@@ -46,32 +46,58 @@ export async function fileHash(path) {
   return hash.digest('hex');
 }
 
-async function* plainLines(path, startOffset, startLine) {
+export class FileChangedError extends Error {
+  name = 'FileChangedError';
+}
+
+const sha = (buf) => createHash('sha256').update(buf).digest('hex');
+
+async function openPlainReader(path, startOffset, startLine, expectedFingerprint) {
   const fh = await open(path, 'r');
-  try {
-    let pos = startOffset;
-    let lineNo = startLine;
-    let pending = Buffer.alloc(0);
-    const buf = Buffer.alloc(READ_CHUNK);
-    for (;;) {
-      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
-      if (!bytesRead) return;
-      pos += bytesRead;
-      let data = pending.length ? Buffer.concat([pending, buf.subarray(0, bytesRead)]) : Buffer.from(buf.subarray(0, bytesRead));
-      let lineStart = 0;
-      let nl;
-      const base = pos - data.length;
-      while ((nl = data.indexOf(0x0a, lineStart)) !== -1) {
-        lineNo++;
-        yield { line: data.toString('utf8', lineStart, nl), lineNo, endOffset: base + nl + 1 };
-        lineStart = nl + 1;
-      }
-      pending = data.subarray(lineStart);
-      data = null;
-    }
-  } finally {
+  const readAt = async (start, end) => {
+    const buf = Buffer.alloc(Math.max(0, end - start));
+    if (buf.length) await fh.read(buf, 0, buf.length, start);
+    return buf;
+  };
+  let head = await readAt(0, Math.min(startOffset, FINGERPRINT_WINDOW));
+  let tail = await readAt(Math.max(0, startOffset - FINGERPRINT_WINDOW), startOffset);
+  const fingerprint = () => `${sha(head)}:${sha(tail)}`;
+  if (startOffset > 0 && fingerprint() !== expectedFingerprint) {
     await fh.close();
+    throw new FileChangedError(path);
   }
+  const consume = (bytes) => {
+    if (head.length < FINGERPRINT_WINDOW) head = Buffer.concat([head, bytes.subarray(0, FINGERPRINT_WINDOW - head.length)]);
+    tail = Buffer.concat([tail, bytes]);
+    if (tail.length > FINGERPRINT_WINDOW) tail = tail.subarray(tail.length - FINGERPRINT_WINDOW);
+  };
+  async function* lines() {
+    try {
+      let pos = startOffset;
+      let lineNo = startLine;
+      let pending = Buffer.alloc(0);
+      const buf = Buffer.alloc(READ_CHUNK);
+      for (;;) {
+        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+        if (!bytesRead) return;
+        pos += bytesRead;
+        const data = pending.length ? Buffer.concat([pending, buf.subarray(0, bytesRead)]) : Buffer.from(buf.subarray(0, bytesRead));
+        const base = pos - data.length;
+        let lineStart = 0;
+        let nl;
+        while ((nl = data.indexOf(0x0a, lineStart)) !== -1) {
+          lineNo++;
+          consume(data.subarray(lineStart, nl + 1));
+          yield { line: data.toString('utf8', lineStart, nl), lineNo, endOffset: base + nl + 1 };
+          lineStart = nl + 1;
+        }
+        pending = data.subarray(lineStart);
+      }
+    } finally {
+      await fh.close();
+    }
+  }
+  return { lines: lines(), fingerprint };
 }
 
 async function* streamLines(source, skip) {
@@ -245,6 +271,7 @@ async function planSource(db, source) {
     startLine: 0,
     state: null,
     skip: false,
+    expectedFingerprint: null,
   };
   const stale = current && current.parser_version !== ctx.parserVersion;
   if (source.immutable) {
@@ -267,6 +294,7 @@ async function planSource(db, source) {
       ctx.startOffset = offset;
       ctx.startLine = Number(current.last_line);
       ctx.state = current.parser_state;
+      ctx.expectedFingerprint = current.prefix_fingerprint;
       return ctx;
     }
   }
@@ -279,7 +307,8 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, onBatch, befor
   if (ctx.skip) return { skipped: true, lines: 0, rows: 0 };
   const parser = PARSERS[source.tool].create(source, ctx.state);
   const flushed = new Map();
-  const lines = source.immutable ? streamLines(source, ctx.startLine) : plainLines(source.path, ctx.startOffset, ctx.startLine);
+  const reader = source.immutable ? null : await openPlainReader(source.path, ctx.startOffset, ctx.startLine, ctx.expectedFingerprint);
+  const lines = reader ? reader.lines : streamLines(source, ctx.startLine);
   let rows = [];
   let count = 0;
   let total = { lines: 0, rows: 0 };
@@ -287,12 +316,12 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, onBatch, befor
   let endOffset = ctx.startOffset;
 
   const flush = async (done) => {
-    const fingerprint = source.immutable ? null : await prefixFingerprint(source.path, endOffset);
+    const fingerprint = reader ? reader.fingerprint() : null;
     const session = { ...parser.finish() };
     await beforeCommit?.({ lastLine, endOffset });
     await commitBatch(db, ctx, {
       session,
-      rows,
+      rows: dedupeRows(rows),
       unknown: countDelta(parser.unknown, flushed),
       state: parser.snapshot(),
       endOffset: source.immutable ? 0 : endOffset,
@@ -319,7 +348,17 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, onBatch, befor
 }
 
 function retryable(err) {
-  return err instanceof StaleCheckpointError || RETRYABLE_PG.has(err.code);
+  return err instanceof StaleCheckpointError || err instanceof FileChangedError || RETRYABLE_PG.has(err.code);
+}
+
+export function dedupeRows(rows) {
+  const byKey = new Map();
+  for (const r of rows) {
+    const key = `${r.session_id}\u0000${r.record_id}\u0000${r.block_ordinal}`;
+    byKey.delete(key);
+    byKey.set(key, r);
+  }
+  return [...byKey.values()];
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -331,7 +370,7 @@ export async function ingestSource(db, source, options = {}) {
     try {
       return await ingestOnce(db, source, options);
     } catch (err) {
-      if (err instanceof StaleCheckpointError) {
+      if (err instanceof StaleCheckpointError || err instanceof FileChangedError) {
         if (++stale > MAX_STALE_RETRIES) throw err;
       } else if (!retryable(err) || ++other >= MAX_ATTEMPTS) {
         throw err;
@@ -352,7 +391,7 @@ export async function insertProvisional(db, { sessionId, tool, nativeId, text, t
       is_sidechain: false, project: null, cwd: null, started_at: null, ended_at: null, title: null,
       source_path: null, cli_version: null,
     });
-    const recordId = `provisional:${turnId ?? createHash('sha256').update(`${ts.toISOString()}\n${text}`).digest('hex').slice(0, 16)}`;
+    const recordId = `provisional:${turnId ?? createHash('sha256').update(`${sessionId}\n${text}`).digest('hex').slice(0, 16)}`;
     await trx('messages')
       .insert({
         session_id: sessionId, record_id: recordId, block_ordinal: 0, ts, role: 'assistant', kind: 'text',

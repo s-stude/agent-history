@@ -84,6 +84,25 @@ Tasks 1–9 are urgent because of the Dec 1 deletion. All destructive tests (cor
 
 Per-task steps and checks live in the task list.
 
+## Measured (trial backfill, Nov 16, 2026)
+
+Real transcripts were scanned read-only into a throwaway `agent_history_test_trial_*` database on Postgres.app 18. **[code+check]**
+
+| Measure | Result | Budget |
+| --- | --- | --- |
+| Sources / lines / rows | 1,971 / 837,320 / 218,434; 0 errors | — |
+| Logical sessions | 1,969, equal to the inventory | equal |
+| Full scan time | 190 s | < 30 min |
+| Fast rescan (`--changed-since-last`) | 0.8 s | — |
+| Database size | 858 MB (messages heap 317 MB, tsvector GIN 51 MB, trigram GIN 120 MB, files GIN 6 MB, row key 40 MB) | < 2 GB |
+| Memory, macOS peak footprint | 195 MB | < 300 MB |
+| Memory, max resident set size | 368 MB (first run 809 MB before the memory fixes) | < 300 MB — **not met** |
+| Query latency | date 0.5 ms, keyword ~1 ms, substring 1.5 ms (178 ms without trigram), file path 0.1 ms | < 1 s |
+| Prompt counts, 6 random sessions vs an independent count | all equal | equal |
+| Known key prefixes in messages, sessions, parser state | 0 | 0 |
+
+**Memory decision, open for the user.** The scan runs Node with `--max-old-space-size=192`. Peak footprint (what Activity Monitor shows and what drives memory pressure) is within budget; max RSS also counts pages Node has freed but not returned and off-heap buffers (zstd windows, socket buffers). Options: accept footprint as the budget metric (recommended; the hook path ingests one file and stays well below), or spend more time on off-heap buffers. Live-ingest latency for a synthetic appended turn was not measured separately; the fast rescan bounds it (0.8 s for all sources).
+
 ## Success criteria coverage
 
 | Success criterion | Verified in | Note |

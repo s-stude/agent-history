@@ -18,6 +18,7 @@ const NOISE_SYSTEM = new Set([
   'turn_duration', 'stop_hook_summary', 'informational', 'bridge_status', 'model_refusal_no_fallback', 'local_command',
   'api_error', 'away_summary',
 ]);
+const SNIFF_TYPE = /^\{"type":"([a-z-]+)"/;
 const KEPT_SYSTEM = new Set(['compact_boundary', 'scheduled_task_fire']);
 const SKIPPED_BLOCKS = new Set(['thinking', 'redacted_thinking']);
 const FILE_KEYS = ['file_path', 'path', 'notebook_path', 'filePath'];
@@ -110,6 +111,11 @@ export function createClaudeParser(source, state = null) {
   }
 
   function parseLine(line, lineNo) {
+    const sniffed = line.length > 4096 ? SNIFF_TYPE.exec(line.slice(0, 300))?.[1] : undefined;
+    if (sniffed && NOISE_TYPES.has(sniffed)) {
+      count(skipped, sniffed);
+      return [];
+    }
     let r;
     try {
       r = JSON.parse(line);

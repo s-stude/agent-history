@@ -420,3 +420,31 @@ test('duplicate record keys in one batch: last record wins for any batch size', 
     assert.equal(rows[0].text, 'second version', `batch ${batchLines}`);
   }
 });
+
+test('a batch is flushed early when its rows exceed the byte budget', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  const big = (i) => JSON.stringify({ type: 'user', uuid: `b${i}`, sessionId: PARENT, cwd: '/w/demo', timestamp: '2026-11-01T10:00:00.000Z', message: { role: 'user', content: 'x'.repeat(4000) } });
+  await write(e.claudeFile, `${[0, 1, 2, 3, 4].map(big).join('\n')}\n`);
+  let batches = 0;
+  await ingestSource(e.db, await e.source(e.claudeFile), { batchBytes: 9000, onBatch: () => batches++ });
+  assert.equal(batches, 3);
+  assert.equal((await e.db('messages')).length, 5);
+});
+
+test('hook against a corrupted schema exits cleanly and records a private diagnostic', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  await write(e.claudeFile, `${(await claudeLines()).join('\n')}\n`);
+  await e.db.raw('DROP TABLE messages CASCADE');
+  const home = path.join(e.dir, 'home');
+  const r = await runHook(JSON.stringify({ session_id: PARENT, transcript_path: e.claudeFile, last_assistant_message: 'private answer text' }), {
+    env: { ...process.env, AGENT_HISTORY_HOME: home }, roots: e.roots, url: e.url,
+  });
+  assert.equal(typeof r.ok, 'boolean');
+  const errors = await e.db('ingest_errors').select('error_class', 'detail');
+  assert.deepEqual(errors.map((x) => [x.error_class, x.detail]), [['42P01', null]]);
+  const log = await readFile(path.join(home, 'ingest.log'), 'utf8');
+  assert.match(log, /\t42P01$/m);
+  assert.ok(!log.includes('private answer text'));
+});

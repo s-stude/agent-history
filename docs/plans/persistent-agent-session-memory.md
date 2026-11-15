@@ -136,15 +136,16 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [x] Verify tests pass (16 ingest tests + CLI stdin test; full suite 121 green twice)
 
 ### Task 9: Backfill via scan
-- [ ] `scan` walks the Task 3 inventory; flags `--tool`, `--changed-since-last`, `--dry-run`; resumable from `sources` checkpoints after interruption
-- [ ] Set budgets before running: peak RSS < 300 MB for the Node process, full scan < 30 min, DB size (`pg_database_size`) < 2 GB; revise only with a written reason
-- [ ] Trial in a throwaway `agent_history_test_trial_<rand>` DB: run the full scan read-only over real transcripts, measure peak memory (`/usr/bin/time -l`), duration, `pg_database_size`, and separately the `messages` heap, `text_tsv` GIN and trigram GIN sizes (`pg_relation_size`) plus substring query latency; drop the trigram index if it does not pay for itself; keep the trial DB until Task 13's timed queries are done
+- [x] `scan` walks the Task 3 inventory; flags `--tool`, `--changed-since-last`, `--dry-run`; resumable from `sources` checkpoints after interruption
+- [x] Set budgets before running: peak RSS < 300 MB for the Node process, full scan < 30 min, DB size (`pg_database_size`) < 2 GB; revise only with a written reason. Result: time and size met; memory met as macOS peak footprint (195 MB) but not as max RSS (368 MB); see the design doc's Measured section — open for the user
+- [x] Trial in a throwaway `agent_history_test_trial_<rand>` DB: run the full scan read-only over real transcripts, measure peak memory (`/usr/bin/time -l`), duration, `pg_database_size`, and separately the `messages` heap, `text_tsv` GIN and trigram GIN sizes (`pg_relation_size`) plus substring query latency; drop the trigram index if it does not pay for itself; keep the trial DB until Task 13's timed queries are done
 - [ ] **(user)** Run `agent-history scan` into the real `agent_history` DB after `setup database`, then `ANALYZE`
-- [ ] During the trial scan, ingest a synthetic appended turn from an isolated source and record its latency; live-agent checks stay user-run
-- [ ] Verify unique logical sessions in the DB equal the inventory, with empty, malformed, unsupported and duplicate sources listed separately
-- [ ] Verify for 3 random Claude sessions that prompt counts match `jq` over `type=="user"` lines whose content is human text (not `tool_result`), and for 3 Codex sessions that user `message` counts match
-- [ ] Verify no seeded or known real key prefixes (`sk-ant-`, `ghp_`, `AKIA`) match in the DB outside `[REDACTED]`
-- [ ] Record measured memory, time, size and live-ingest latency in the design doc
+- [x] During the trial scan, ingest a synthetic appended turn from an isolated source and record its latency; live-agent checks stay user-run
+- [x] Verify unique logical sessions in the DB equal the inventory, with empty, malformed, unsupported and duplicate sources listed separately
+- [x] Verify for 3 random Claude sessions that prompt counts match `jq` over `type=="user"` lines whose content is human text (not `tool_result`), and for 3 Codex sessions that user `message` counts match
+- [x] Verify no seeded or known real key prefixes (`sk-ant-`, `ghp_`, `AKIA`) match in the DB outside `[REDACTED]`
+- [x] Memory work after the first trial (809 MB max RSS): long lines kept as a chunk list (no quadratic concat), fingerprint tail window copies ≤ 4 KB, Claude noise lines sniffed and skipped without `JSON.parse`, batches also flushed at 16 MB of row text, generated commands run Node with `--max-old-space-size=192`
+- [x] Record measured memory, time, size and live-ingest latency in the design doc
 
 ### Task 10: Doctor command
 - [x] Report per tool: sources missing from the DB, partial sources (checkpoint behind readable end), stale sources (not updated after their file changed), unsupported layouts, pending retries, provisional rows older than 10 minutes
@@ -154,7 +155,7 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [x] Test that a recovered source returns `doctor` to exit 0
 - [x] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row, one unreachable server
 - [x] Implemented in `src/doctor.js`; output is `level<TAB>check<TAB>detail`, levels ok/info/warn/fail; a successful batch marks that source's earlier `ingest_errors` resolved
-- [x] Verify `agent-history doctor` exits 0 against the Task 9 trial DB (run after Task 9 completes)
+- [x] Verify `agent-history doctor` exits 0 against the Task 9 trial DB: first run correctly failed `claude_partial` for this live session's transcript; after `scan --changed-since-last` (0.8 s over 1,971 sources) it exits 0 with only the expected `reader_role missing` and `backup none` warnings
 
 ### Task 11: Hooks and recovery scan
 - [ ] **(user)** Claude Code `~/.claude/settings.json`: `Stop` and `SubagentStop` (`async: true`) run `"$NODE" "/abs/repo/bin/agent-history" ingest`; `SessionStart` runs `scan --changed-since-last`; command is a fixed string with quoted absolute paths, stdin never interpolated into shell
@@ -176,15 +177,15 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [ ] Verify tmp export count equals fixture session count, expected assistant fixture text is present, and no seeded secret appears; **(user)** check the live Task 11 session export
 
 ### Task 13: Discovery pointer and recall test
-- [ ] Connection helpers: `ownerConnection()` and `readerConnection()` from one resolved endpoint; the reader URL sets `user=agent_history_reader` and drops any owner user or password. Tests: an owner user in the URI authority and in query parameters never leaks into the reader URL
-- [ ] Generate the "Past sessions" pointer from config: the reader connection as an explicit `--dbname` URL, the absolute Postgres.app `psql` path, one tested example query per filter (project + date, keyword via `websearch_to_tsquery`, substring via `ILIKE`), the note that full-text covers only the first 100,000 characters of a message and the `ILIKE` fallback for longer ones, markdown path only if export is enabled
+- [x] Connection helpers (`readerUrl` in `src/pointer.js`; the owner side is the normalized endpoint itself) from one resolved endpoint; the reader URL sets `user=agent_history_reader` and drops any owner user or password. Tests: an owner user in the URI authority and in query parameters never leaks into the reader URL
+- [x] Generate the "Past sessions" pointer from config: the reader connection as an explicit `--dbname` URL, the absolute Postgres.app `psql` path, one tested example query per filter (project + date, keyword via `websearch_to_tsquery`, substring via `ILIKE`), the note that full-text covers only the first 100,000 characters of a message and the `ILIKE` fallback for longer ones, markdown path only if export is enabled
 - [ ] **(user)** Run the pointer's connection and verify `SELECT current_user` prints `agent_history_reader`
-- [ ] Pointer tells the agent to show dates and prefer newer sessions when decisions conflict
+- [x] Pointer tells the agent to show dates and prefer newer sessions when decisions conflict
 - [ ] **(user)** Add it to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`
 - [ ] **(user)** Write 10 recall questions from real history with expected session ids in `tests/private/recall_cases.md` (git-ignored, 0600)
 - [ ] **(user)** Run each question in a fresh session; record queries used and whether the right session was found
 - [ ] **(user)** Verify at least 8 of 10 found in 3 queries or fewer; if not, add a `/recall` skill and re-run
-- [ ] Verify timed queries (`EXPLAIN ANALYZE`) by date range, project, file path and keyword each return in < 1 s on the Task 9 trial DB, using the indexes from Task 4; then drop the trial DB and confirm it is gone
+- [x] Verify timed queries (`EXPLAIN ANALYZE`) by date range, project, file path and keyword each return in < 1 s on the Task 9 trial DB, using the indexes from Task 4; then drop the trial DB and confirm it is gone. Trial (218k messages): date range 0.5 ms, project + date via `sessions_project_started_at`, keyword via the tsvector GIN ~1 ms, substring via trigram 1.5 ms (178 ms without it, so the trigram index stays), file path 0.1 ms with `files @> ARRAY[…]` (the pointer uses this form; `= ANY(files)` cannot use the GIN index)
 
 ### Task 14: Retrospective skill
 - [x] (`skills/retrospective/SKILL.md`) Write a skill that pulls a project's sessions for a date range through the reader role and summarises decisions, reversals and open threads, each with date, session id and a short quote

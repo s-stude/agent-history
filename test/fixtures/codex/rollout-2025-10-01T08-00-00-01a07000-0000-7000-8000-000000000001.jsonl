@@ -1,0 +1,6 @@
+{"id": "01a07000-0000-7000-8000-000000000001", "timestamp": "2025-10-01T08:00:00.000Z", "instructions": "x", "git": {}}
+{"record_type": "state"}
+{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Legacy prompt"}]}
+{"type": "function_call", "name": "shell", "arguments": "{\"command\":[\"ls\"]}", "call_id": "c1"}
+{"type": "function_call_output", "call_id": "c1", "output": "{\"output\":\"a\\nb\"}"}
+{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Legacy answer"}]}

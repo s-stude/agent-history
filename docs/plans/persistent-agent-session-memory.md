@@ -97,14 +97,21 @@ Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest
 - [x] Verify parser tests pass
 
 ### Task 7: Codex parser
-- [ ] Read `session_meta` for id, `cwd`, `cli_version`, `source`, parent/fork info
-- [ ] Canonical source: `response_item` records. `message` keeps `role` and `phase` (commentary vs final); `developer` and injected context are not user prompts
-- [ ] Tool calls: `function_call` (string `arguments`) and `custom_tool_call` (`input`); correlate outputs by `call_id`; extract tool name and file paths; trim outputs to 500 chars after sanitizing
-- [ ] Skip `reasoning`, `token_count` and `event_msg` records that mirror response items; keep turn ids and lifecycle timestamps as metadata
-- [ ] Handle compaction, resume and fork without reinserting replayed history
-- [ ] Count unknown types including `response_item` subtypes
-- [ ] Add anonymised fixtures (plain and `.zst`) and golden tests: call/output pairing, phases, no double count from `event_msg.item_completed` / `task_complete`, a resumed session
-- [ ] Verify parser tests pass
+- [x] Read `session_meta` for id, `cwd`, `cli_version`, `source`, parent/fork info
+- [x] Canonical source: `response_item` records. `message` keeps `role` and `phase` (commentary vs final); `developer` and injected context are not user prompts
+- [x] Tool calls: `function_call` (string `arguments`) and `custom_tool_call` (`input`); correlate outputs by `call_id`; extract tool name and file paths; trim outputs to 500 chars after sanitizing
+- [x] Skip `reasoning`, `token_count` and `event_msg` records that mirror response items; keep turn ids and lifecycle timestamps as metadata
+- [x] Handle compaction, resume and fork without reinserting replayed history
+- [x] Count unknown types including `response_item` subtypes
+- [x] Add anonymised fixtures (plain and `.zst`) and golden tests: call/output pairing, phases, no double count from `event_msg.item_completed` / `task_complete`, a resumed session
+- [x] User messages: each plain `input_text` block is a prompt row (keeps its block ordinal); blocks starting with an injected-context marker (`<environment_context>`, other `<tag>` wrappers, `# AGENTS.md`, `# Files`) are skipped and counted
+- [x] Guardian (approval reviewer) children: user messages that start with "The following is the Codex agent history" are transcript copies of the parent and are skipped (2,509 such messages, ~57k blocks in real data); the guardian's own verdicts are kept; `agent_id` = nickname or subagent kind (`guardian`)
+- [x] Replayed parent history: only when a foreign `session_meta` follows line 1, lines before `subagent_history_start_ordinal` are skipped (checked on all 256 real children: the one replaying child shares 7 records, all before the ordinal; no other child shares any record with its parent)
+- [x] Turn ids from `task_started` / `turn_context` go on every row (Task 8 matches provisional final answers by them); title = first prompt line (120 chars)
+- [x] Legacy files: line 1 `{id, instructions, timestamp}` is the meta; bare `{type: message|function_call|…}` lines are response items; `record_type: state` is skipped
+- [x] All text through `cleanText` / `cleanBounded` / `safeDate` (shared with the Claude parser)
+- [x] Real data (915 Codex files, 234,552 lines): 63,669 rows in 18 s at 260 MB; 3,044 prompts; every tool result resolved its tool name; 0 unknown types
+- [x] Verify parser tests pass
 
 ### Task 8: Incremental ingest with atomic checkpoints
 - [ ] Stream sources line by line; stop at the last newline-terminated line; tolerate a partial UTF-8 sequence at the end (track byte offsets on raw `Buffer`s, decode only complete lines)

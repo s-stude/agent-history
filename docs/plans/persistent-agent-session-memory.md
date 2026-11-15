@@ -13,13 +13,15 @@ Rule for every task: destructive tests (corruption, cleanup, moved or replaced f
 
 Items marked **(user)** below are prepared but not run.
 
+Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/uv-cache`), and isolated DB/export/log/home paths under `./tmp/`. No test or validation command may initialize the default home DB. Implementation tests use synthetic hook payloads and fixtures; live agent behavior is user-run. The read-only real-data trial writes only private artifacts under `./tmp/`, reports aggregate measurements only, and removes its DB, sidecars, logs and exports afterwards.
+
 ## Validation Commands
-- `uv run pytest -q`
+- `.venv/bin/python -m pytest -q`
 - `.venv/bin/agent-history --help`
-- `.venv/bin/agent-history doctor`
+- `AGENT_HISTORY_DB=tmp/check/history.db .venv/bin/agent-history doctor` (isolated DB, never the home DB)
 
 ### Task 1: Safety net against transcript cleanup
-- [ ] **(user)** Confirm in Claude Code docs that `cleanupPeriodDays: 0` does not disable transcripts; then set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json`
+- [ ] **(user)** Verify the documented cleanup setting and set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json`; do not set it to 0
 - [ ] **(user)** Optionally mirror raw transcripts to `~/.agent-history/raw/` (`claude/`, `codex/sessions/`, `codex/archived_sessions/`); create `~/.agent-history` and `raw/` with mode 0700; keep out of cloud sync
 - [ ] **(user)** Verify `jq .cleanupPeriodDays ~/.claude/settings.json` prints 36500
 - [ ] **(user)** Verify the `*.jsonl` count in `~/.claude/projects` does not drop after starting a new `claude` session
@@ -29,7 +31,7 @@ Items marked **(user)** below are prepared but not run.
 - [x] Create `agent_history/` package with `__main__.py`, `cli.py`, `db.py`, `inventory.py`, `redact.py`, `ingest.py`, `parsers/claude.py`, `parsers/codex.py`
 - [x] Add CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor` (stubs)
 - [x] Add `pyproject.toml`: `requires-python = ">=3.14"`, stdlib only, `agent-history` console script, pytest as dev dependency
-- [x] Install into a project-local `.venv` with `uv sync` (repo-only scope); record the absolute interpreter and `agent-history` paths in the README for hooks and launchd
+- [x] Install into a project-local `.venv` with `uv sync --python python3.14`; uv cache pinned to `tmp/uv-cache` and Python downloads disabled in `pyproject.toml`; record the absolute interpreter and `agent-history` paths in the README for hooks and launchd
 - [x] Add `.gitignore`: `*.db`, `*.db-wal`, `*.db-shm`, `*.db-journal`, `tmp/`, `__pycache__/`, `.peer-chats/`, `tests/private/`
 - [x] Add a CLI smoke test (`--help` exits 0 and lists all subcommands) so pytest never collects zero tests
 - [x] Verify `agent-history --help` runs from a fresh shell and pytest passes
@@ -38,7 +40,9 @@ Items marked **(user)** below are prepared but not run.
 - [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
 - [ ] Read `.zst` with `compression.zstd.open` as a stream
 - [ ] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
-- [ ] Define message identity: Claude line `uuid`; Codex `(session_id, decompressed line number)` plus content hash
+- [ ] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
+- [ ] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; test replay and multi-block records
+- [ ] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported
 - [ ] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash
 - [ ] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
 - [ ] Classify unsupported layouts (unknown extension, paginated/migrated rollout layout, unreadable file) instead of skipping silently
@@ -90,7 +94,9 @@ Items marked **(user)** below are prepared but not run.
 - [ ] Stream sources line by line; stop at the last newline-terminated line; tolerate a partial UTF-8 sequence at the end
 - [ ] Write rows in bounded batches (e.g. 500 lines); each batch commits rows and the `sources` checkpoint in one transaction
 - [ ] Advance checkpoints with compare-and-set so a stale writer cannot move one backwards; on conflict, re-read from the newer checkpoint
-- [ ] Re-read from the start when a plain file shrank or its inode or content hash changed; upsert by message id
+- [ ] Detect truncation and replacement with a fingerprint of the already-checkpointed prefix (size, inode, hash of the last checkpointed bytes window), not a full-file hash; ordinary appends never replay the prefix; full-content hashes only identify immutable copies
+- [ ] A failed checkpoint compare-and-set rolls back the whole batch, including message writes, before retrying
+- [ ] Tests: an append does not reparse the prior prefix; a same-size rewrite is detected and replayed
 - [ ] On `busy` or decode errors: bounded retries, then record in `ingest_errors` and leave the source `pending` for the next scan
 - [ ] `ingest` reads hook stdin JSON as untrusted data (`session_id`, `transcript_path`, `agent_transcript_path`, `cwd`, `turn_id`, `last_assistant_message`); paths must sit under a known root
 - [ ] Store `last_assistant_message` as a provisional row; replace it when the matching transcript record arrives (Codex by `turn_id`, Claude by last assistant reply after the turn's prompt); two identical real answers both survive
@@ -102,7 +108,7 @@ Items marked **(user)** below are prepared but not run.
 - [ ] `scan` walks the Task 3 inventory; flags `--tool`, `--changed-since-last`, `--dry-run`; resumable from `sources` checkpoints after interruption
 - [ ] Set budgets before running: peak memory < 300 MB, full scan < 30 min, DB < 2 GB; revise only with a written reason
 - [ ] **(user)** Run `agent-history scan` over all existing transcripts, measuring peak memory (`/usr/bin/time -l`), duration and DB size
-- [ ] While the scan runs, ingest a live turn and record its latency
+- [ ] During the tmp trial scan, ingest a synthetic appended turn from an isolated source and record its latency; live-agent checks stay user-run
 - [ ] Verify unique logical sessions in the DB equal the inventory, with empty, malformed, unsupported and duplicate sources listed separately
 - [ ] Verify for 3 random Claude sessions that prompt counts match `jq` over `type=="user"` lines whose content is human text (not `tool_result`), and for 3 Codex sessions that user `message` counts match
 - [ ] Verify no seeded or known real key prefixes (`sk-ant-`, `ghp_`, `AKIA`) match in the DB outside `[REDACTED]`
@@ -111,7 +117,8 @@ Items marked **(user)** below are prepared but not run.
 ### Task 10: Doctor command
 - [ ] Report per tool: sources missing from the DB, partial sources (checkpoint behind readable end), stale sources (not updated after their file changed), unsupported layouts, pending retries, provisional rows older than 10 minutes
 - [ ] Report parse errors, unknown types, last ingest time, DB size and file modes
-- [ ] Exit non-zero when anything above is non-empty, so it can gate checks
+- [ ] Exit non-zero only for defined unresolved failures (missing, partial, stale, unsupported, unresolved errors, stale provisional rows, wrong file modes); show historical/recovered errors and unknown-type counts separately; known skipped types never fail it
+- [ ] Test that a recovered source returns `doctor` to exit 0
 - [ ] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row
 - [ ] Verify `agent-history doctor` exits 0 after Task 9
 
@@ -121,17 +128,17 @@ Items marked **(user)** below are prepared but not run.
 - [ ] **(user)** Probe Codex 0.163 with a logging hook in an isolated `CODEX_HOME` to record the real stdin payload and which fields are null
 - [ ] **(user)** Add a launchd agent running `scan --changed-since-last` every 15 minutes, covering interrupted turns, immediate exits and missed hooks without a new session
 - [ ] Hook failures go to `~/.agent-history/ingest.log` (0600) and `ingest_errors`, never to the session
-- [ ] **(user)** Verify `claude -p "reply with the single word: kumquat-<random>"` (prompt does not contain the reply) lands with the assistant reply `kumquat-<random>` as a non-provisional row within 60 s
+- [ ] **(user)** Ask for a randomized reply word and verify it in the correct session with `role=assistant` and `provisional=0` within 60 s; a match in the prompt is not success
 - [ ] **(user)** Verify a subagent run in both tools produces a child session linked to its parent
 - [ ] **(user)** Verify recovery: kill a session mid-turn and exit immediately after a turn; the launchd scan captures both within 15 minutes and `doctor` exits 0
-- [ ] **(user)** Verify visible overhead: 10 runs each of `claude -p` with hooks enabled vs disabled; median foreground difference < 50 ms; ingest latency reported separately
-- [ ] Verify with a corrupted DB in an isolated test home: the session completes and the error is in the log and visible to `doctor`
+- [ ] **(user)** Measure foreground hook dispatch/return time against the 50 ms budget independently of model and network time; report paired end-to-end runs and worker latency separately as observations
+- [ ] Verify a synthetic hook invocation against an isolated corrupted DB exits 0 and records a private diagnostic; **(user)** verify real session completion with that setup
 - [ ] **(user)** Repeat the capture and overhead checks with Codex
 
 ### Task 12: Markdown export (optional)
 - [ ] `export` writes `~/.agent-history/md/<project>/<date>-<id>.md` from sanitized DB rows; directories 0700, files 0600
 - [ ] Run export after each ingest for the touched session
-- [ ] Verify `.md` count equals session count, `rg kumquat ~/.agent-history/md` finds the Task 11 session, and no seeded secret appears in exports
+- [ ] Verify tmp export count equals fixture session count, expected assistant fixture text is present, and no seeded secret appears; **(user)** check the live Task 11 session export
 
 ### Task 13: Discovery pointer and recall test
 - [ ] Generate the "Past sessions" pointer from config: actual DB path, the query tool that works (system `sqlite3` or a tested `python3 -c` example from Task 4), markdown path only if export is enabled
@@ -149,7 +156,8 @@ Items marked **(user)** below are prepared but not run.
 
 ### Task 15: Maintenance and retention
 - [ ] **(user)** Add a monthly launchd job running `PRAGMA optimize` and `VACUUM`; ingest during maintenance retries and recovers
-- [ ] Test retention in an isolated `CLAUDE_CONFIG_DIR`: an ingested transcript with mtime aged past a short `cleanupPeriodDays` is deleted by Claude Code's own cleanup, and stays fully searchable in the DB
+- [ ] Test that search still works after deleting an ingested disposable fixture source
+- [ ] **(user)** Exercise Claude Code's real cleanup in an isolated `CLAUDE_CONFIG_DIR` on an aged transcript and record the result
 - [ ] Verify an ingest that hits `VACUUM` contention is recorded and recovered by the next scan
 - [ ] **(user)** Verify `doctor` exits 0 after a week of normal use
 - [ ] **(user)** Record the real 30-day observation in the design doc as pending until the oldest ingested transcript has actually been cleaned up and is still searchable
@@ -169,5 +177,6 @@ Items marked **(user)** below are prepared but not run.
 | --- | --- | --- | --- |
 | Touch global config during implementation? | No; prepare `setup` commands and a runbook | User is away until tomorrow and will run them | user |
 | Live agent runs and recall questions | Left to the user, with scripts | They spend quota and need the user's memory | user |
-| Install location | Project-local `.venv` via `uv sync`, not `pip --user` | Repo-only scope; hooks use the absolute `.venv/bin/agent-history` path | default |
+| Install location | Project-local `.venv` via `uv sync`, uv cache in `tmp/uv-cache`, no managed Python downloads | Repo-only scope (peer found the default uv cache is in `~/.cache/uv`); hooks use the absolute `.venv/bin/agent-history` path | default + peer |
+| Plan corrections from Codex review of `ef2d173` | Block-level row keys, prefix fingerprint instead of full hash, batch rollback on CAS failure, isolated validation DB, synthetic hook tests, explicit doctor health rules | Verified against the plan text and real data | peer |
 | Where setup logic lives | `agent-history setup …` subcommands instead of loose shell scripts | Testable on temp homes, dry-run by default | default |

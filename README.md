@@ -9,11 +9,11 @@ Design: [docs/Persistent Agent Session Memory — Design Plan.md](docs/Persisten
 Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv sync
-uv run pytest -q
+uv sync --python python3.14
+.venv/bin/python -m pytest -q
 ```
 
-This creates a project-local `.venv`. Hooks and launchd jobs call the CLI by absolute path:
+Run from the repository root with Python 3.14 already installed. `pyproject.toml` pins uv's cache to `tmp/uv-cache` and disables managed Python downloads, so the environment and cache stay inside the repository. Hooks and launchd jobs call the CLI by absolute path:
 
 - interpreter: `<repo>/.venv/bin/python`
 - CLI: `<repo>/.venv/bin/agent-history`

@@ -2,7 +2,7 @@
 
 Nov 16, 2026 · Implements [Persistent Agent Session Memory — Proposal](Persistent%20Agent%20Session%20Memory%20—%20Proposal.md) · Task list: [plans/persistent-agent-session-memory.md](plans/persistent-agent-session-memory.md)
 
-The task list is the execution authority. This doc records the facts and decisions behind it. Revised after a Codex peer review (findings folded in below).
+The task list is the execution authority. This doc records the facts and decisions behind it. Revised after a Codex peer review, then re-targeted from Python + SQLite to Node.js + PostgreSQL (Postgres.app) on Nov 16, 2026. The Python tasks 2–5 (commits `9dbd41e`…`e477aff`, removed in `9c1605d`) are the behavioural reference for the Node port; their measured findings below still hold.
 
 Evidence marks: **[code+check]** checked on this machine; **[code]** traced, not all re-checked; **[docs]** from docs only; **[inferred]** reasoned, not run.
 
@@ -10,11 +10,18 @@ Evidence marks: **[code+check]** checked on this machine; **[code]** traced, not
 
 - **The 30-day deletion is close.** `cleanupPeriodDays` is not set in `~/.claude/settings.json`, so the default applies. The oldest transcripts left are from about Nov 1, so cleanup starts deleting them around Dec 1. Backfill happens early, but only after redaction exists, so unredacted production data never lands in the DB. **[code+check]**
 - **Claude Code data is large.** `~/.claude/projects` holds about 6.7 GB in 1095 JSONL files, 723 of them subagent transcripts. 4 files exceed 100 MB; the largest is about 170 MB. Ingest must stream and batch. **[code+check]**
-- **Most Codex history is compressed or archived.** `~/.codex/sessions` has 126 `.jsonl` and 687 `.jsonl.zst` files; `~/.codex/archived_sessions` has 99 more. A plain-JSONL scanner would miss about 786 sessions. Python 3.14's `compression.zstd` reads them, so the minimum Python is 3.14. **[code+check]**
+- **Most Codex history is compressed or archived.** `~/.codex/sessions` has 126 `.jsonl` and 687 `.jsonl.zst` files; `~/.codex/archived_sessions` has 99 more. A plain-JSONL scanner would miss about 786 sessions. **[code+check]**
+- **Node reads zstd natively.** Node v22.22.0 (nvm, on `PATH`) has `zlib.createZstdDecompress`; piping a real `.jsonl.zst` rollout through it into `readline` yields its lines with no warning. Node 22.22 also runs `.ts` files directly (`process.features.typescript` is `strip`), so no build step; type stripping is on by default only from Node 22.18 **[docs]**, which sets the minimum. Startup of `node -e 0` is about 25 ms. **[code+check]** The zstd API is marked experimental in Node 22 **[docs]**.
+- **Postgres.app 18 is the server.** `/Applications/Postgres 18.app`, PostgreSQL 18.1, port 5432, `listen_addresses = localhost`, data dir `~/Library/Application Support/Postgres/var-18` (mode 0700). `Postgres 16.app` and `var-16` also exist, but only 18 runs. Postgres.app is set to start at login. **[code+check]**
+- **`psql` on `PATH` is the wrong one.** `which psql` gives Homebrew's 16.14 client. Postgres.app binaries are at `/Applications/Postgres 18.app/Contents/Versions/latest/bin` (`latest -> 18`) and that directory is not on `PATH`. Docs, hooks and the pointer use absolute Postgres.app paths. **[code+check]**
+- **Auth is trust plus a permission dialog.** `pg_hba.conf` is `trust` for local socket and 127.0.0.1/::1. The server loads `auth_permission_dialog`, which asks once per client executable and stores the answer. `node` v22.22.0 at its nvm path is already `allow`; an "unknown local process" was denied on Nov 13. A headless client (launchd) whose executable is not on the list has no one to click Allow. **[code+check]** for the config and stored list; the headless behaviour is **[inferred]**. Postgres.app rejects clients it cannot identify, and `psql` / `pg_dump` are separate executables that need their own permission **[docs]**.
+- **Extensions.** `pg_trgm` 1.6 and `unaccent` 1.1 are available. **[code+check]** Full-text search (`tsvector`, `websearch_to_tsquery`, `ts_rank`, `ts_headline`) is built in **[docs]**.
+- **The server is shared.** About 50 other databases live on the same server, several of them test DBs. Test runs must create and drop only their own uniquely named databases. **[code+check]**
 - **Claude subagents share the parent's session id.** In a subagent transcript, `sessionId` equals the parent's id; only `agentId` tells children apart. Keying sessions by `sessionId` would merge children into their parent. **[code+check]**
 - **Both tools support hooks.** Codex 0.163 reports `hooks stable true` in `codex features list` **[code+check]**. Codex reads `~/.codex/hooks.json` with `SessionStart`, `Stop`, `SubagentStop`; user hooks must be trusted via `/hooks`; async hooks may finish out of order and are cancelled at session end **[docs]**. Claude Code `SubagentStop` gives the child transcript in `agent_transcript_path` **[docs]**.
-- **Tooling.** Python 3.14 stdlib `sqlite3` (3.53) builds FTS5 tables **[code+check]**. The system `sqlite3` CLI is 3.43; FTS5 `MATCH` from the CLI is not yet confirmed.
 - **Transcript formats differ.** Claude Code: `user` / `assistant` lines, where `user` lines also wrap tool results, plus noise (`attachment`, `mode`, `permission-mode`, `bridge-session`, …). Codex: `{timestamp, type, payload}` records; `session_meta`, `response_item` (`message` with `phase`, `function_call`, `custom_tool_call`, outputs by `call_id`, `reasoning`), and `event_msg` records that mirror the same content. **[code+check]** for types; details of `phase` and mirroring are from the Codex review **[docs]**.
+- **Inventory counts (from the Python Task 3 run).** Claude 371 root + 721 child + 2 skipped = 1094 files; Codex 126 plain + 687 zst active + 99 zst archived = 912 files; 2002 logical sessions. The Node inventory must reproduce these on the same data. **[code+check]** at the time of that run.
+- **Sanitizer false positives (from the Python Task 5 run).** Over 50 random sessions (22,392 lines) a naive `sk-` pattern hit 9 times inside long base64url blobs. Key patterns must not start or end inside a longer token and are length-capped; after that, 4 `env` redactions and 0 key-pattern hits. Known limit: a key glued to letters or digits on both sides is missed. **[code+check]** at the time of that run.
 - **Codex retention is unknown.** No age-based deletion was found, but Codex has archive, delete and `migrate-rollouts` commands, and ephemeral sessions are never written. The DB stays the independent store either way.
 
 ## Decisions
@@ -23,43 +30,55 @@ Evidence marks: **[code+check]** checked on this machine; **[code]** traced, not
 | --- | --- | --- |
 | Which tools? | Claude Code and Codex, including compressed and archived Codex sessions | Both in active use **[code+check]** |
 | Which machines? | One Mac, no merging | Non-goal in the proposal |
-| Language? | Python 3.14+, stdlib only, one `agent-history` CLI | `sqlite3` + `compression.zstd`, no dependencies |
+| Language | Node.js ≥ 22.18, TypeScript run directly by Node (erasable syntax only: no `enum`, no namespaces, no parameter properties), ES modules, one `agent-history` CLI | Node 22.22 is installed and runs `.ts` and zstd natively **[code+check]** |
+| Dependencies | Runtime: `pg` only. Dev: `typescript` for `tsc --noEmit` type checks. Tests: `node:test` + `node:assert` | Small surface for code that runs on every turn |
+| Store | PostgreSQL 18 in Postgres.app, database `agent_history`, connection from `AGENT_HISTORY_DATABASE_URL`, default `postgresql://localhost:5432/agent_history`. Every client resolves the same endpoint (host, port, database, transport) from it. Ingest and backup use the owner connection; the pointer and `/recall` use a reader connection derived from the endpoint with `user=agent_history_reader` and no owner credentials; restore names its destination DB explicitly. `pg.Client` gets `connectionString`, libpq CLIs get `--dbname`; credentials are never logged | One endpoint so backup and pointer never hit a different DB. A user inside a `--dbname` URL overrides `-U` **[docs]**, so the reader URL must be built, not reused |
+| Roles | Owner role: the macOS user (`ahalilov`). `agent_history_reader`: `LOGIN`, `SELECT` only, `default_transaction_read_only = on`, used by the agent pointer and `/recall`. Roles are cluster-wide, so only `setup database` (user) creates them | The pointer gives the agent a read-only connection. It is not a hard barrier: under trust auth an allowed client can reconnect as the owner |
+| Search | `text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', left(coalesce(text, ''), 100000))) STORED` + GIN; `pg_trgm` GIN on `text` for substrings, kept only if the trial measures it worth its size; `websearch_to_tsquery('simple', …)` for queries | `simple` avoids English stemming on mixed English/Russian text and code; trigram covers paths and identifiers. A `tsvector` must be < 1 MB **[docs]**, so the indexed prefix is capped and an oversized block cannot fail its batch. Full text is still stored; words past the cap are found only by the `ILIKE` fallback, filtered by project and date first. The pointer states this |
+| Schema version | `schema_migrations(version, applied_at)`; numbered SQL migrations applied in one transaction; refuse a DB whose highest version is newer than the code knows | Replaces SQLite `user_version` |
 | Session identity | Roots: `(tool, native_id)`. Claude children: `(claude, parent_id, agent_id)`. Native ids kept in their own columns | Avoids merging subagents into parents |
-| Message identity | Claude: line `uuid`. Codex: `(session_id, line number in the decompressed stream)` plus a content hash | Stable when a file is compressed or archived; hash detects replacement |
+| Message identity | Claude: line `uuid`. Codex: `(segment, decompressed line number)` plus a content hash. Row key `(session, record id, block ordinal)` as a unique constraint | Stable when a file is compressed or archived; hash detects replacement |
 | Read position | Plain active files: byte offset in the file. `.zst` and archived files: treated as immutable, replayed whole once, keyed by content hash | Compressed files have no stable byte offsets |
-| Checkpoints | Rows and checkpoint commit in one transaction; checkpoint only moves forward (compare-and-set) | No lost or duplicated turns under crashes or concurrent ingests |
+| Checkpoints | `sources.generation` (bigint) increments on every reset and every advance. A batch takes the per-source `pg_advisory_xact_lock`, then re-reads the checkpoint and re-validates the prefix fingerprint under the lock, writes rows, and advances with `UPDATE sources … WHERE path = $1 AND generation = $expected`; zero rows updated rolls back the batch | Offset alone does not identify a file generation: a stale writer at offset N could commit old rows into a replaced file that was replayed back to N |
+| Connections | One short-lived connection per CLI process (`pg.Client`, not a pool); `connectionTimeoutMillis: 3000` bounds connect and handshake, `statement_timeout: 30000` bounds queries, `application_name: 'agent-history'` | Hooks are separate processes; a pool would only add idle connections |
 | Final answer from hook | Store `last_assistant_message` as a provisional row; replace it when the matching transcript record arrives (Codex by `turn_id`, Claude by last assistant reply after the turn's prompt) | Transcript can lag; avoids duplicates without text-based dedup |
-| `raw` column | Sanitized source line, bounded to 2 KB, plus source path and line number | Full fidelity stays in the source or the optional mirror; keeps trimming meaningful |
+| `raw` column | Sanitized source line, bounded to 2 KB, plus source path and line number; `text`, not `jsonb` | Truncated JSON is not valid `jsonb`; full fidelity stays in the source or the optional mirror |
 | Redaction | Parse each record, walk every string value (decoding JSON-in-strings), redact before trimming; applies to all stored fields, exports and logs. Logs never contain message text | Escaped PEM, nested tool args and metadata otherwise slip through |
-| Capture guarantee | Turns whose hook fires are in the DB within 60 s. Missed hooks, interrupts and immediate exits are recovered by `SessionStart` scan and a 15-minute launchd scan | Async hooks can be cancelled; recovery must not depend on a future session |
+| Server down | Hooks exit 0, append an id-only line (time, tool, session id, transcript path, error class) to `~/.agent-history/ingest.log` (0600). The next scan reads transcripts, so nothing is spooled except ids. `doctor` reports log entries newer than the last successful ingest | `ingest_errors` cannot be written when the server is down |
+| Permission dialog | Hooks and launchd jobs run the same absolute `node` path (`~/.nvm/versions/node/v22.22.0/bin/node`), already allowed. `setup` records the path and `doctor` warns when the current `node` differs. `psql` and `pg_dump` from Postgres.app are allowed separately. Changing Node version means re-allowing it once, interactively. A real launchd run without a prompt is an acceptance check, not an assumption | Headless clients cannot answer the dialog; pinning is necessary but not proven sufficient |
+| Capture guarantee | Turns whose hook fires are in the DB within 60 s. Missed hooks, interrupts, immediate exits and server downtime are recovered by `SessionStart` scan and a 15-minute launchd scan | Async hooks can be cancelled; recovery must not depend on a future session |
 | Subagents | Captured live via `SubagentStop` in both tools, with parent link | 723 Claude child transcripts hold real work |
-| Failure handling | Hooks never fail the session, but every failure is recorded in the DB and shown by `doctor` | Fail-open must stay observable |
-| File privacy | `~/.agent-history` is 0700; DB, WAL/SHM, logs, exports 0600; optional raw mirror is unredacted and also 0700 | Sidecars and logs hold the same text |
+| Failure handling | Hooks never fail the session, but every failure is recorded in `ingest_errors` (or the log when the DB is unreachable) and shown by `doctor` | Fail-open must stay observable |
+| Privacy | Data dir is Postgres.app's (0700). `~/.agent-history` is 0700; logs, exports, dumps 0600; optional raw mirror is unredacted and also 0700. Trust auth means any local process allowed by the dialog can read the DB; acceptable on a single-user Mac | Recorded as a known limit, not hidden |
+| Backups | Weekly `pg_dump -Fc` with Postgres.app's `pg_dump` to `~/.agent-history/backups/` (0600); older dumps rotated (keep 8) only after the new dump completes. Restore: empty DB from `template0`, roles provisioned separately, `pg_restore --exit-on-error --single-transaction`, then newer migrations, then `doctor` | A Postgres.app major upgrade starts a new empty data dir; the dump already holds schema and `schema_migrations`, so migrations must not run before restore |
+| Maintenance | Autovacuum; no scheduled `VACUUM FULL`. `ANALYZE` after backfill | Postgres handles this; `VACUUM FULL` would lock out hooks |
+| Tests and DBs | Each test run creates `agent_history_test_<pid>_<rand>` from `template0`, applies migrations, and drops exactly the database it created (never enumerates or drops by prefix). No roles are created. Live role checks are user steps after `setup database`; implementation tests check the generated role SQL text and use `SET TRANSACTION READ ONLY` sessions | Shared server with ~50 other DBs; roles are cluster-wide and a temp DB does not isolate them |
 | LLM summary per session | Not in v1 | Add only if the recall test fails |
 | `/recall` | Not at first; pointer only | Add if the recall test shows the agent struggling |
 | Retrospective | A skill | Needs multi-step instructions |
 
 ## Steps
 
-Tasks 1–9 are urgent because of the Dec 1 deletion. All destructive tests (corruption, cleanup, moved files) run against isolated test homes and DBs, never against the real archive.
+Tasks 1–9 are urgent because of the Dec 1 deletion. All destructive tests (corruption, cleanup, moved files) run against isolated test homes under `./tmp/` and throwaway `agent_history_test_*` databases, never against the real archive.
 
 | Task | What | Key check |
 | --- | --- | --- |
 | 1 | Raise `cleanupPeriodDays` to 36500; optional private raw mirror | Setting reads back; transcript count does not drop |
-| 2 | Skeleton, install, CLI smoke test, `.gitignore` for DB sidecars and private data | Installed `agent-history --help` runs; smoke test passes |
+| 2 | Node skeleton, install, CLI smoke test, test-DB harness, `.gitignore` | `agent-history --help` runs via absolute `node`; `npm test` passes; test DB created and dropped |
 | 3 | Source inventory and identity contract | Inventory matches `find` counts per tool and encoding; parent + 2 children get distinct ids |
-| 4 | Schema, private file setup, coverage and diagnostics tables | FTS insert/update/delete stay in sync; 0700/0600 on DB, sidecars, custom path |
+| 4 | Schema migrations, roles, diagnostics tables | Full-text and trigram search stay in sync on insert/update/delete; reader role cannot write; newer schema refused |
 | 5 | Sanitizer (unit level) | Seeded secrets in every form are removed; hashes and UUIDs survive |
 | 6 | Claude Code parser | Golden tests incl. tool-result wrappers and parent + children |
 | 7 | Codex parser (plain and `.zst`) | Golden tests incl. call/output pairs, `phase`, no double count from `event_msg` |
 | 8 | Incremental ingest with atomic checkpoints | Exact rows and checkpoints after crash, concurrent append, partial line, truncation, compression |
 | 9 | Backfill, bounded and resumable | Inventory reconciles; seeded secrets absent; memory/time within budget |
-| 10 | `doctor` | Reports missing, partial, stale, unsupported sources and errors |
-| 11 | Hooks for both tools, plus launchd recovery scan | Final answer captured within 60 s; foreground overhead < 50 ms |
+| 10 | `doctor` | Reports missing, partial, stale, unsupported sources, errors, server and `node` path problems |
+| 11 | Hooks for both tools, plus launchd recovery scan | Final answer captured within 60 s; foreground overhead < 50 ms; server-down turn recovered |
 | 12 | Markdown export (optional) | Count matches; seeded secrets absent |
 | 13 | Discovery pointer and recall test | 8/10 found in ≤ 3 queries; timed filter queries |
 | 14 | Retrospective skill | One request; every decision/reversal backed by cited content |
-| 15 | Maintenance and retention | Disposable aged fixture survives real cleanup; real 30-day observation pending until seen |
+| 15 | Backups, maintenance and retention | Dump restores into an empty throwaway DB by the upgrade sequence; disposable aged fixture survives real cleanup |
+| 16 | Setup commands and runbook | Dry-run writes nothing; apply is idempotent |
 
 Per-task steps and checks live in the task list.
 
@@ -67,9 +86,9 @@ Per-task steps and checks live in the task list.
 
 | Success criterion | Verified in | Note |
 | --- | --- | --- |
-| 1. Every session saved within one turn | Tasks 10, 11 | Narrowed: within 60 s when the hook fires; otherwise at the next recovery scan (≤ 15 min) |
+| 1. Every session saved within one turn | Tasks 10, 11 | Narrowed: within 60 s when the hook fires and the server is up; otherwise at the next recovery scan (≤ 15 min) |
 | 2. Searchable after the 30-day cleanup | Task 15 | Disposable aged fixture now; real observation recorded later |
 | 3. 8 of 10 test questions answered in 3 queries or fewer | Task 13 | Private recall cases, not committed |
 | 4. Retrospective in one request | Task 14 | Checked against cited content, not ids only |
 | 5. Under 50 ms of visible delay | Task 11 | Hook-enabled vs disabled foreground time |
-| 6. No unredacted keys | Tasks 5, 8, 9, 12 | Seeded set only; regexes cannot catch arbitrary credentials |
+| 6. No unredacted keys | Tasks 5, 8, 9, 12, 15 | Seeded set only; regexes cannot catch arbitrary credentials; dumps checked too |

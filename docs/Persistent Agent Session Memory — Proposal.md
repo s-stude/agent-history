@@ -4,7 +4,7 @@ Nov 16, 2026 · @Akim @gmail
 
 ## Summary
 
-Build a permanent, searchable store of every Claude Code and Codex session, saved by lifecycle hooks into one local SQLite database, so an agent can answer "remember last month…" and run project retrospectives. The agent learns the database exists from a one-line pointer in CLAUDE.md / AGENTS.md (progressive disclosure) and searches it with plain tools: `sqlite3` with FTS5 keyword search, plus grep over optional markdown exports. No embeddings and no server. Expected effort: about one day for a working first version.
+Build a permanent, searchable store of every Claude Code and Codex session, saved by lifecycle hooks into one local PostgreSQL database (Postgres.app on this Mac), so an agent can answer "remember last month…" and run project retrospectives. The agent learns the database exists from a one-line pointer in CLAUDE.md / AGENTS.md (progressive disclosure) and searches it with plain tools: `psql` with PostgreSQL full-text search (`tsvector` + GIN) and trigram matching (`pg_trgm`), plus grep over optional markdown exports. No embeddings and no extra service beyond the Postgres.app server that already runs at login. The capture code is a small Node.js CLI. Expected effort: about one day for a working first version.
 
 ## Problem
 
@@ -33,24 +33,25 @@ Agent history disappears, and what survives cannot be searched across projects.
 
 ## Proposed approach
 
-A small ingest script, called by hooks after every turn, copies each session into one SQLite file; the agent reads it only when a question needs history.
+A small Node.js ingest CLI, called by hooks after every turn, copies each session into one PostgreSQL database on the local Postgres.app server; the agent reads it only when a question needs history.
 
-![img.png](img.png)
+![Capture and recall flow](architecture.svg)
 
 The top row runs on every turn without anyone noticing; the bottom row runs only when you ask about the past.
 
 **Components**
 
 1. **Hook config.** Claude Code in `~/.claude/settings.json`, Codex in `~/.codex/hooks.json`. `Stop` (async) runs `agent-history ingest`; `SessionStart` runs a catch-up scan for sessions not fully saved.
-2. **Ingest script.** Reads the hook's stdin JSON (`session_id`, `transcript_path`, `cwd`, `last_assistant_message`), reads the transcript from the last saved offset, redacts secrets, trims tool output and upserts rows.
-3. **Schema.** `sessions` (id, tool, project, cwd, started\_at, ended\_at, title, transcript\_path) and `messages` (id, session\_id, ts, role, text, tool\_name, files), plus an FTS5 table `messages_fts` over the text.
+2. **Ingest CLI (Node.js).** `agent-history`, run with an absolute `node` path. Reads the hook's stdin JSON (`session_id`, `transcript_path`, `cwd`, `last_assistant_message`), reads the transcript from the last saved offset, redacts secrets, trims tool output and upserts rows with `INSERT … ON CONFLICT` through the `pg` client.
+3. **Schema.** Database `agent_history`: `sessions` (id, tool, project, cwd, started\_at, ended\_at, title, transcript\_path) and `messages` (id, session\_id, ts, role, text, tool\_name, files), with a generated `tsvector` column over the text, a GIN index on it, and a trigram GIN index for substring search (paths, identifiers, error strings).
 4. **Markdown export (optional).** One file per session at `~/.agent-history/md/<project>/<date>-<id>.md`, so grep, ripgrep and tree work as in the original post.
 5. **Doc-tree pointer.** A few lines in the global CLAUDE.md / AGENTS.md, written as plain facts:
 
 ```markdown
 ## Past sessions
-All Claude Code and Codex sessions are stored in ~/.agent-history/history.db (SQLite).
-Tables: sessions, messages, messages_fts (FTS5). Filter by project and date first, then search text.
+All Claude Code and Codex sessions are stored in PostgreSQL database agent_history (Postgres.app, localhost:5432).
+Query read-only: "/Applications/Postgres 18.app/Contents/Versions/latest/bin/psql" --dbname="postgresql://agent_history_reader@localhost:5432/agent_history"
+Tables: sessions, messages (text_tsv for full-text over the first 100,000 chars; ILIKE on text for longer ones). Filter by project and date first, then search text.
 Markdown copies: ~/.agent-history/md/<project>/
 ```
 
@@ -64,24 +65,27 @@ Markdown copies: ~/.agent-history/md/<project>/
 | Final answer source | Read transcript file, use `last_assistant_message` | `last_assistant_message`: the transcript is written asynchronously and can lag the current turn |
 | Ingestion style | Copy whole file each time, incremental by byte offset | Incremental: store the last read offset per session, upsert by message UUID |
 | What to store | Everything, prompts + answers only, middle ground | Prompts, final answers, tool names, touched file paths, timestamps; tool output trimmed to \~500 chars |
-| Search | grep on .db, sqlite3 LIKE, FTS5, vectors | FTS5 (keyword ranking, no embeddings); optional per-session markdown export for grep/tree |
+| Search | `ILIKE`, full-text (`tsvector`), trigram (`pg_trgm`), vectors (`pgvector`) | Full-text with `websearch_to_tsquery` and `ts_rank` for words, `pg_trgm` for substrings and identifiers; no embeddings in v1; optional per-session markdown export for grep/tree |
 | Discovery | Always inject history, pointer only | Pointer only: a 3–5 line note in CLAUDE.md / AGENTS.md, so context costs nothing until asked |
 | Hook mode | Synchronous, async | `async: true` so sessions never wait on the database |
-| Location | Per-project DB, one global DB | One global DB (`~/.agent-history/history.db`) with a `project` column |
+| Store | SQLite file, local PostgreSQL | PostgreSQL in the Postgres.app server already running at login: real concurrent writers, full-text and trigram search, `psql` and GUI clients; one database `agent_history` with a `project` column |
+| Language | Python, Node.js, Go | Node.js (TypeScript run by Node's built-in type stripping), `pg` as the only runtime dependency; Node reads `.zst` natively |
 | Retention | Raise `cleanupPeriodDays` too, or not | Both: raise it as a backstop and keep the DB as the source of truth |
 
 ## Risks and mitigations
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Secrets in transcripts (API keys, `.env` contents) | High: one file holds every secret ever pasted | Redact known key patterns on ingest; `chmod 600`; keep it out of git and cloud sync; optional SQLCipher |
+| Secrets in transcripts (API keys, `.env` contents) | High: one database holds every secret ever pasted | Redact known key patterns on ingest; data dir is 0700; agent queries through a read-only role; exports, logs and backups 0600; keep dumps out of git and cloud sync |
 | Transcript lag or missing file at capture time | Lost or stale last turn | Use `last_assistant_message`; re-scan unfinished sessions at the next SessionStart |
-| Database bloat from tool output | Slow search, large file | Trim tool output, store file paths not contents; run `VACUUM` monthly |
+| Database bloat from tool output | Slow search, large database | Trim tool output, store file paths not contents; autovacuum; watch size in `doctor` |
+| Postgres.app not running, or upgraded to a new major version | Hooks fail; a new major version starts with an empty data dir | Hooks fail open and log; recovery scan catches up once the server is back; regular `pg_dump` backups; `doctor` checks server version and DB presence |
+| Postgres.app permission dialog blocks a headless client | launchd scan or hook is denied with no one to click Allow | Run every client through one pinned absolute `node` path that is already allowed; `doctor` and the recovery scan surface connection denials |
 | Weak recall on vague asks ("that auth thing") | Agent misses the right session | Date and project filters first; the agent retries with synonyms; add a short per-session summary later |
 | Stale decisions resurfacing | Agent repeats a choice that was reversed | Always show dates; newer sessions win; retros list reversals |
 | Transcript format changes between tool versions | Ingest breaks silently | Keep the raw JSONL line in a column; log parse errors; pin a parser version |
 | Hook security | Hooks run with full user rights | Exec form with quoted paths; treat hook input as untrusted; never `eval` it |
-| Concurrent sessions writing at once | `database is locked` errors | WAL mode plus a busy timeout; one short transaction per turn |
+| Concurrent sessions writing at once | Duplicate rows or lost checkpoints | PostgreSQL row locking; one short transaction per batch; checkpoint compare-and-set; one connection per hook process |
 
 ## Success criteria
 
@@ -96,7 +100,7 @@ Markdown copies: ~/.agent-history/md/<project>/
 
 - [ ] Which tools are in scope for v1: Claude Code only, or Codex too?
 - [ ] Which OS and machines: one laptop, or several that should merge?
-- [ ] Language for the hook script: Python (stdlib `sqlite3`), Bun/Node, or Go binary?
+- [x] Language for the hook script: Node.js. Store: PostgreSQL via Postgres.app on this Mac.
 - [ ] Should existing transcripts be backfilled before the 30-day cleanup removes more?
 - [ ] Store subagent transcripts, or only the main session?
 - [ ] Add an LLM-written one-paragraph summary per session (costs tokens, improves recall)?
@@ -110,4 +114,6 @@ Markdown copies: ~/.agent-history/md/<project>/
 - [Codex hooks best practices](https://github.blesdmm.dns-dynamic.net/shanraisshan/codex-cli-best-practice/blob/main/best-practice/codex-hooks.md)
 - [Claude Code deletes your old session logs after 30 days](https://brycewatson.com/blog/28-claude-code-deletes-old-logs)
 - [SessionEnd hook: transcript file deleted before hook can read it](https://claudeissues.com/issue/30217-sessionend-hook-transcript-file-deleted-before-hook-can-read-it)
+- [Postgres.app documentation](https://postgresapp.com/documentation/)
+- [PostgreSQL full-text search](https://www.postgresql.org/docs/current/textsearch.html)
 - [Default cleanupPeriodDays hard-deleted \~950 transcripts](https://claudeissues.com/issue/85466-default-30-day-cleanupperioddays-silently-hard-deleted-950-session-transcripts-n)

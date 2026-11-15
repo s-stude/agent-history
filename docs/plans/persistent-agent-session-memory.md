@@ -2,23 +2,28 @@
 
 Design: [Design Plan](../Persistent%20Agent%20Session%20Memory%20—%20Design%20Plan.md) · [Proposal](../Persistent%20Agent%20Session%20Memory%20—%20Proposal.md)
 
-Rule for every task: destructive tests (corruption, cleanup, moved or replaced files) run against isolated test homes and DBs under `./tmp/`, never against `~/.claude`, `~/.codex` or `~/.agent-history`.
+Stack: Node.js ≥ 22.18 (type stripping on by default; installed: v22.22.0 via nvm), TypeScript run directly by Node, `pg` client, PostgreSQL 18 in Postgres.app on `localhost:5432`. The earlier Python + SQLite implementation of Tasks 2–5 (commits `9dbd41e`…`e477aff`) was removed in `9c1605d`; use it as the behavioural reference when porting, including its tests.
+
+Rule for every task: destructive tests (corruption, cleanup, moved or replaced files) run against isolated test homes under `./tmp/` and throwaway `agent_history_test_*` databases, never against `~/.claude`, `~/.codex`, `~/.agent-history` or the `agent_history` database.
 
 ## Run scope (decided by the user, 2026-11-16)
 
-- Repo only during implementation. Nothing outside the repo is written: no `~/.claude/settings.json`, `~/.codex/hooks.json`, launchd, `CLAUDE.md` / `AGENTS.md` or `~/.agent-history` changes.
+- Repo only during implementation. Nothing outside the repo is written: no `~/.claude/settings.json`, `~/.codex/hooks.json`, launchd, `CLAUDE.md` / `AGENTS.md` or `~/.agent-history` changes, and no `agent_history` database or roles on the server.
 - Every outside step is prepared as an `agent-history setup …` command (dry-run by default, `--apply` writes with a backup) plus a runbook, `docs/RUNBOOK.md`, for the user to run.
 - Live agent runs (capture, overhead, recall questions, retrospective) are left to the user with exact commands.
-- Reading `~/.claude` and `~/.codex` read-only for inventory and parser checks is allowed. A trial backfill of real data goes to `./tmp/` (git-ignored, 0600) and is deleted after measuring.
+- Reading `~/.claude` and `~/.codex` read-only for inventory and parser checks is allowed. A trial backfill of real data goes to a throwaway `agent_history_test_trial_<rand>` database, reports aggregate measurements only, lives through the Task 10 and Task 13 checks, and is dropped after Task 13.
+
+Server objects during implementation (approved by the user, 2026-11-16): tests create and drop only the exact `agent_history_test_<pid>_<rand>` database each run created, plus one trial DB (Task 9). No roles and nothing else on the server are created or changed.
 
 Items marked **(user)** below are prepared but not run.
 
-Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/uv-cache`), and isolated DB/export/log/home paths under `./tmp/`. No test or validation command may initialize the default home DB. Implementation tests use synthetic hook payloads and fixtures; live agent behavior is user-run. The read-only real-data trial writes only private artifacts under `./tmp/`, reports aggregate measurements only, and removes its DB, sidecars, logs and exports afterwards.
+Paths used below: `PGBIN="/Applications/Postgres 18.app/Contents/Versions/latest/bin"` (the `psql` on `PATH` is Homebrew 16 and is not used); `NODE=~/.nvm/versions/node/v22.22.0/bin/node` (already allowed in Postgres.app's permission dialog).
 
 ## Validation Commands
-- `.venv/bin/python -m pytest -q`
-- `.venv/bin/agent-history --help`
-- `AGENT_HISTORY_DB=tmp/check/history.db .venv/bin/agent-history doctor` (isolated DB, never the home DB)
+- `npm test` (runs `node --test`; each run creates and drops its own test DB)
+- `npx tsc --noEmit`
+- `./bin/agent-history --help`
+- `npm run check:doctor` (creates a unique test DB, runs `doctor` against it, drops it; never the real DB)
 
 ### Task 1: Safety net against transcript cleanup
 - [ ] **(user)** Verify the documented cleanup setting and set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json`; do not set it to 0
@@ -27,49 +32,55 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 - [ ] **(user)** Verify the `*.jsonl` count in `~/.claude/projects` does not drop after starting a new `claude` session
 - [ ] **(user)** If mirrored, verify per-tool file counts (`.jsonl` and `.jsonl.zst`) match source and `stat -f %Lp ~/.agent-history/raw` prints 700
 
-### Task 2: Project skeleton and install
-- [x] Create `agent_history/` package with `__main__.py`, `cli.py`, `db.py`, `inventory.py`, `redact.py`, `ingest.py`, `parsers/claude.py`, `parsers/codex.py`
-- [x] Add CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor` (stubs)
-- [x] Add `pyproject.toml`: `requires-python = ">=3.14"`, stdlib only, `agent-history` console script, pytest as dev dependency
-- [x] Install into a project-local `.venv` with `uv sync --python python3.14`; uv cache pinned to `tmp/uv-cache` and Python downloads disabled in `pyproject.toml`; record the absolute interpreter and `agent-history` paths in the README for hooks and launchd
-- [x] Add `.gitignore`: `*.db`, `*.db-wal`, `*.db-shm`, `*.db-journal`, `tmp/`, `__pycache__/`, `.peer-chats/`, `tests/private/`
-- [x] Add a CLI smoke test (`--help` exits 0 and lists all subcommands) so pytest never collects zero tests
-- [x] Verify `agent-history --help` runs from a fresh shell and pytest passes
+### Task 2: Project skeleton, install, test DB harness
+- [ ] `package.json`: `"type": "module"`, `"engines": {"node": ">=22.18"}`, `bin: {"agent-history": "bin/agent-history"}`, runtime dependency `pg`, dev dependencies `typescript`, `@types/node`, `@types/pg`; `package-lock.json` committed
+- [ ] `tsconfig.json` for type checking only: `noEmit`, `strict`, `module`/`moduleResolution` `nodenext`, `allowImportingTsExtensions`, `erasableSyntaxOnly`, `verbatimModuleSyntax`
+- [ ] Source layout: `src/cli.ts`, `src/db.ts`, `src/migrations/*.sql`, `src/inventory.ts`, `src/redact.ts`, `src/ingest.ts`, `src/parsers/claude.ts`, `src/parsers/codex.ts`; imports use `.ts` extensions
+- [ ] `bin/agent-history`: `#!/usr/bin/env node` launcher importing `../src/cli.ts`; hooks and launchd call it as `"$NODE" /abs/repo/bin/agent-history …`, never through `PATH`
+- [ ] CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor`, `setup` (stubs), parsed with `node:util` `parseArgs`
+- [ ] Install with `npm ci`; npm cache pinned to `tmp/npm-cache` via repo `.npmrc`; record the absolute `node` and `bin/agent-history` paths in the README for hooks and launchd
+- [ ] `.gitignore`: `node_modules/`, `tmp/`, `.peer-chats/`, `tests/private/`, `*.dump`, `.idea/`
+- [ ] Test harness `test/helpers/db.ts`: creates `agent_history_test_<pid>_<rand>` from `template0`, applies migrations, and after the run drops with `WITH (FORCE)` only the exact name it created successfully; never lists or drops other databases by prefix; never creates roles; skips with a clear message when the server is unreachable
+- [ ] `npm run check:doctor` script wrapping the harness for the validation command
+- [ ] CLI smoke test (`--help` exits 0 and lists all subcommands) so `node --test` never collects zero tests
+- [ ] Verify `"$NODE" bin/agent-history --help` runs from a fresh shell, `npm test` and `npx tsc --noEmit` pass, and no `agent_history_test_*` DB is left on the server afterwards
 
 ### Task 3: Source inventory and identity contract
-- [x] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
-- [x] Read `.zst` with `compression.zstd.open` as a stream
-- [x] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
-- [x] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
-- [x] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; test replay and multi-block records — defined in `inventory.row_key`; multi-block and replay tests land with the parsers (Tasks 6–7) and ingest (Task 8)
-- [x] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported — inventory level; legacy record parsing lands in Task 7
-- [x] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash — `Source.immutable`; offset logic lands in Task 8
-- [x] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
-- [x] Classify unsupported layouts (unknown extension, paginated/migrated rollout layout, unreadable file) instead of skipping silently — unrecognized names are `unsupported`; recognized page segments are included; workflow `journal.jsonl` orchestration logs are `skipped`
-- [x] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
-- [x] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine — Claude 371 root + 721 child + 2 skipped = 1094 files; Codex 126 plain + 687 zst active + 99 zst archived = 912 files; 0 empty, 0 unsupported, 2002 sessions
+- [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
+- [ ] Read `.zst` with `fs.createReadStream(…).pipe(zlib.createZstdDecompress())` into `readline`, as a stream
+- [ ] Define session identity: roots `(tool, native_id)`; Claude children `(claude, parent_id, agent_id)`; keep native ids in their own columns
+- [ ] Define record identity: Claude line `uuid`; Codex `(segment, decompressed line number)` where segment is the rollout file name without extensions, so plain, `.zst` and archived copies share ids
+- [ ] Row key is `(logical session, record id, block ordinal)`: one row per retained block, so a line with text and several tool calls keeps every block; multi-block and replay tests land with the parsers (Tasks 6–7) and ingest (Task 8)
+- [ ] Treat Codex paginated continuation files (`rollout-…-<thread>_<page>.jsonl*`) as extra segments of the same thread, and legacy 2025-10 files without the `{type, payload}` envelope as supported; legacy record parsing lands in Task 7
+- [ ] Define read positions: plain active files by byte offset; `.zst` and archived files immutable, replayed whole once, keyed by content hash
+- [ ] Deduplicate a logical session seen as plain, compressed and archived copies; report duplicates
+- [ ] Classify unsupported layouts (unknown extension, unreadable file) as `unsupported`; recognized page segments are included; workflow `journal.jsonl` orchestration logs are `skipped`; inventory survives filesystem errors (port the `3d2d99c` fix)
+- [ ] Add tests with fixture trees: parent + 2 Claude children get 3 distinct ids; the same Codex session as `.jsonl`, `.jsonl.zst` and archived maps to one identity
+- [ ] Verify `agent-history scan --dry-run` inventory counts match `find` counts per tool and encoding on this machine (last Python run: Claude 371 root + 721 child + 2 skipped; Codex 126 plain + 687 zst active + 99 zst archived; 2002 sessions; numbers will have grown)
 
-### Task 4: Schema, private files, diagnostics
-- [x] Create `sessions` (id, tool, native_id, parent_id, agent_id, is_sidechain, project, cwd, started_at, ended_at, title, source_path, cli_version)
-- [x] Create `messages` (id, session_id, ts, role, phase, kind, text, tool_name, files, provisional, raw, source_path, source_line, content_hash, parser_version)
-- [x] Create FTS5 `messages_fts` over `messages.text` with insert/update/delete sync triggers
-- [x] Create `sources` (path, session_id, encoding, content_hash, inode, size, offset, last_line, status, updated_at) for coverage and checkpoints
-- [x] Create `ingest_errors` (ts, source_path, line, error_class, detail without message text, resolved_at) and `unknown_types` (tool, type, subtype, count)
-- [x] Track schema version with `PRAGMA user_version`; refuse a DB with a newer version than the code knows
-- [x] DB path `~/.agent-history/history.db`, overridable by `AGENT_HISTORY_DB`; parent dir created 0700; DB and WAL/SHM files 0600 via umask
-- [x] Open with WAL and `busy_timeout=5000`
-- [x] Add tests: `init` twice is idempotent; `journal_mode` is `wal`; DB, `-wal`, `-shm` and parent dir modes are 600/600/600/700 for both default and custom paths; FTS finds inserted, reflects updated, drops deleted rows; newer `user_version` is refused
-- [x] Verify whether the system `sqlite3` CLI can run an FTS5 `MATCH` on the DB; record the result for the Task 13 pointer — works: `/usr/bin/sqlite3` 3.43.2 runs `MATCH` and `snippet()` on the DB
+### Task 4: Schema, roles, diagnostics
+- [ ] Migration `001`: `CREATE EXTENSION IF NOT EXISTS pg_trgm`; `schema_migrations(version int primary key, applied_at timestamptz)`
+- [ ] `sessions` (id text pk, tool, native_id, parent_id, agent_id, is_sidechain bool, project, cwd, started_at timestamptz, ended_at timestamptz, title, source_path, cli_version)
+- [ ] `messages` (id bigint identity pk, session_id fk, record_id, block_ordinal, ts timestamptz, role, phase, kind, text, tool_name, files text[], provisional bool, raw text, source_path, source_line, content_hash, parser_version); unique `(session_id, record_id, block_ordinal)`
+- [ ] Search: `text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', left(coalesce(text, ''), 100000))) STORED` with a GIN index; `gin (text gin_trgm_ops)` (kept or dropped after the Task 9 size measurement); btree indexes on `messages (session_id, ts)`, `sessions (project, started_at)`, GIN on `files`
+- [ ] `sources` (path pk, session_id, encoding, content_hash, inode, size, byte_offset, last_line, prefix_fingerprint, generation bigint, status, updated_at) for coverage and checkpoints
+- [ ] `ingest_errors` (id, ts, source_path, line, error_class, detail without message text, resolved_at) and `unknown_types` (tool, type, subtype, count, primary key on the first three)
+- [ ] Migrations run in one transaction under `pg_advisory_xact_lock`; refuse a DB whose highest `schema_migrations.version` is newer than the code knows
+- [ ] Role setup SQL generated by code (applied only by `setup database`, Task 16): `agent_history_reader` `LOGIN`, `GRANT CONNECT`, `USAGE` on schema, `SELECT` on all tables plus default privileges, `ALTER ROLE … SET default_transaction_read_only = on`; idempotent (`DO` block checking `pg_roles`)
+- [ ] Add tests: `init` twice is idempotent; generated `text_tsv` finds inserted rows, reflects updated text, drops deleted rows; a 5 MB text block inserts without a `tsvector` size error and its first 100,000 chars are searchable; a unique token past char 100,000 is missed by full-text search and found by the project/date-filtered `ILIKE` fallback; trigram `ILIKE '%…%'` finds a path fragment; newer schema version is refused; the generated role SQL contains only `SELECT` grants and the read-only default
+- [ ] Verify Postgres.app `psql` can run the pointer's example query (`websearch_to_tsquery`, `ts_headline`) on the test DB inside `SET TRANSACTION READ ONLY`; record the exact command for the Task 13 pointer
+- [ ] **(user)** After `setup database`, verify the reader role can `SELECT` and that `INSERT` fails
 
 ### Task 5: Sanitizer
-- [x] Redact patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines
-- [x] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
-- [x] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
-- [x] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
-- [x] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
-- [x] Add false-positive tests: git hashes, UUIDs, file paths, base64 images are left intact
-- [x] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
-- [x] Real-data false-positive check (50 random sessions, 22,392 lines, label counts only): first run flagged 9 `sk-` matches inside long base64url blobs; key patterns now must not start or end inside a longer token and are length-capped. Second run: 4 `env` redactions, 0 key-pattern hits. Known limit: a key glued directly to letters or digits on both sides is not detected
+- [ ] Port the Python patterns: Anthropic and OpenAI keys, `ghp_` / `github_pat_`, `AKIA…`, `xox[bp]-`, JWTs, PEM private key blocks (raw and `\n`-escaped), `.env`-style `*_KEY=` / `*_SECRET=` / `*_TOKEN=` / `PASSWORD=` lines; key patterns must not start or end inside a longer token and are length-capped
+- [ ] Sanitize structured records: walk every string value, decode strings that hold JSON (tool arguments, custom call input) and sanitize inside them, then re-serialize
+- [ ] Redact before any trimming, so a secret cut at the 500-char or 2 KB boundary is still removed
+- [ ] Apply to every stored field: text, files, title, cwd, project, raw; logs record ids and error classes only, never message text
+- [ ] Remove NUL (`\u0000`) from stored strings; PostgreSQL `text` rejects it
+- [ ] Add a seeded fixture with fake secrets in: plain text, escaped PEM, nested stringified tool arguments, tool results, metadata fields, and straddling the trim boundary
+- [ ] Add false-positive tests: git hashes, UUIDs, file paths, base64 images and long base64url blobs containing `sk-` are left intact
+- [ ] Verify sanitizer unit tests pass (persistence checks follow in Tasks 8 and 9)
+- [ ] Re-run the real-data false-positive check (50 random sessions, label counts only) and compare with the Python result: 4 `env` redactions, 0 key-pattern hits
 
 ### Task 6: Claude Code parser
 - [ ] Prompts: `user` lines with human text only; tool-result blocks inside `user` lines become `kind=tool_result`, not prompts
@@ -92,24 +103,25 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 - [ ] Verify parser tests pass
 
 ### Task 8: Incremental ingest with atomic checkpoints
-- [ ] Stream sources line by line; stop at the last newline-terminated line; tolerate a partial UTF-8 sequence at the end
-- [ ] Write rows in bounded batches (e.g. 500 lines); each batch commits rows and the `sources` checkpoint in one transaction
-- [ ] Advance checkpoints with compare-and-set so a stale writer cannot move one backwards; on conflict, re-read from the newer checkpoint
+- [ ] Stream sources line by line; stop at the last newline-terminated line; tolerate a partial UTF-8 sequence at the end (track byte offsets on raw `Buffer`s, decode only complete lines)
+- [ ] Write rows in bounded batches (e.g. 500 lines) with multi-row `INSERT … ON CONFLICT (session_id, record_id, block_ordinal) DO UPDATE`; each batch commits rows and the `sources` checkpoint in one transaction
+- [ ] Each batch transaction: take `pg_advisory_xact_lock(hashtextextended(path, 0))`, then re-read the checkpoint row and re-validate the prefix fingerprint under the lock (parse work done before the lock is discarded if the generation moved); write rows; advance with `UPDATE sources SET …, generation = generation + 1 WHERE path = $1 AND generation = $expected`; zero rows updated rolls back the whole batch and restarts from the newer checkpoint. Resets for truncation or replacement also increment `generation`
 - [ ] Detect truncation and replacement with a fingerprint of the already-checkpointed prefix (size, inode, hash of the last checkpointed bytes window), not a full-file hash; ordinary appends never replay the prefix; full-content hashes only identify immutable copies
-- [ ] A failed checkpoint compare-and-set rolls back the whole batch, including message writes, before retrying
-- [ ] Tests: an append does not reparse the prior prefix; a same-size rewrite is detected and replayed
-- [ ] On `busy` or decode errors: bounded retries, then record in `ingest_errors` and leave the source `pending` for the next scan
-- [ ] `ingest` reads hook stdin JSON as untrusted data (`session_id`, `transcript_path`, `agent_transcript_path`, `cwd`, `turn_id`, `last_assistant_message`); paths must sit under a known root
+- [ ] Tests: an append does not reparse the prior prefix; a same-size rewrite is detected and replayed; a stale writer that parsed the old file cannot commit after another writer reset and replayed a replacement back to the same offset
+- [ ] Connect with `pg.Client({ connectionTimeoutMillis: 3000, statement_timeout: 30000, application_name: 'agent-history' })`
+- [ ] On serialization, deadlock or connection errors: bounded retries, then record in `ingest_errors` and leave the source `pending` for the next scan; if the DB is unreachable, append an id-only line to `~/.agent-history/ingest.log` (0600) and exit 0
+- [ ] `ingest` reads hook stdin JSON as untrusted data (`session_id`, `transcript_path`, `agent_transcript_path`, `cwd`, `turn_id`, `last_assistant_message`); paths must sit under a known root; all SQL uses parameters, never string interpolation
 - [ ] Store `last_assistant_message` as a provisional row; replace it when the matching transcript record arrives (Codex by `turn_id`, Claude by last assistant reply after the turn's prompt); two identical real answers both survive
-- [ ] Tests with exact expected rows and checkpoints: chunked vs one-shot ingest; repeated ingest; crash between batches; 2 ingesters on the same file while it grows; partial line and partial UTF-8; transcript delayed then arriving; duplicate hook calls; plain file later replaced by its `.zst` copy; truncated and replaced file; 10 concurrent writers on different sessions
-- [ ] Persistence check: ingest the Task 5 seeded fixture; no seeded secret appears in `messages`, `messages_fts`, `sessions`, `raw` or the log
+- [ ] Tests with exact expected rows and checkpoints: chunked vs one-shot ingest; repeated ingest; crash between batches; 2 ingesters on the same file while it grows; partial line and partial UTF-8; transcript delayed then arriving; duplicate hook calls; plain file later replaced by its `.zst` copy; truncated and replaced file; 10 concurrent writers on different sessions; server unreachable (refused port) and a TCP listener that never completes the handshake both exit 0 within 5 s and log
+- [ ] Persistence check: ingest the Task 5 seeded fixture; no seeded secret appears in `messages` (text and `raw`), `sessions`, `text_tsv` lexemes or the log
 - [ ] Verify tests pass
 
 ### Task 9: Backfill via scan
 - [ ] `scan` walks the Task 3 inventory; flags `--tool`, `--changed-since-last`, `--dry-run`; resumable from `sources` checkpoints after interruption
-- [ ] Set budgets before running: peak memory < 300 MB, full scan < 30 min, DB < 2 GB; revise only with a written reason
-- [ ] **(user)** Run `agent-history scan` over all existing transcripts, measuring peak memory (`/usr/bin/time -l`), duration and DB size
-- [ ] During the tmp trial scan, ingest a synthetic appended turn from an isolated source and record its latency; live-agent checks stay user-run
+- [ ] Set budgets before running: peak RSS < 300 MB for the Node process, full scan < 30 min, DB size (`pg_database_size`) < 2 GB; revise only with a written reason
+- [ ] Trial in a throwaway `agent_history_test_trial_<rand>` DB: run the full scan read-only over real transcripts, measure peak memory (`/usr/bin/time -l`), duration, `pg_database_size`, and separately the `messages` heap, `text_tsv` GIN and trigram GIN sizes (`pg_relation_size`) plus substring query latency; drop the trigram index if it does not pay for itself; keep the trial DB until Task 13's timed queries are done
+- [ ] **(user)** Run `agent-history scan` into the real `agent_history` DB after `setup database`, then `ANALYZE`
+- [ ] During the trial scan, ingest a synthetic appended turn from an isolated source and record its latency; live-agent checks stay user-run
 - [ ] Verify unique logical sessions in the DB equal the inventory, with empty, malformed, unsupported and duplicate sources listed separately
 - [ ] Verify for 3 random Claude sessions that prompt counts match `jq` over `type=="user"` lines whose content is human text (not `tool_result`), and for 3 Codex sessions that user `message` counts match
 - [ ] Verify no seeded or known real key prefixes (`sk-ant-`, `ghp_`, `AKIA`) match in the DB outside `[REDACTED]`
@@ -117,23 +129,25 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 
 ### Task 10: Doctor command
 - [ ] Report per tool: sources missing from the DB, partial sources (checkpoint behind readable end), stale sources (not updated after their file changed), unsupported layouts, pending retries, provisional rows older than 10 minutes
-- [ ] Report parse errors, unknown types, last ingest time, DB size and file modes
-- [ ] Exit non-zero only for defined unresolved failures (missing, partial, stale, unsupported, unresolved errors, stale provisional rows, wrong file modes); show historical/recovered errors and unknown-type counts separately; known skipped types never fail it
+- [ ] Report parse errors, unknown types, last ingest time, DB size, server version, applied schema version, and file modes of `~/.agent-history` and its contents
+- [ ] Report connection health: server unreachable, `ingest.log` entries newer than the last successful ingest, current `process.execPath` differs from the `node` path recorded by `setup`, `agent_history_reader` missing or able to write, newest backup older than 8 days
+- [ ] Exit non-zero only for defined unresolved failures (missing, partial, stale, unsupported, unresolved errors, stale provisional rows, wrong file modes, server unreachable, reader can write); show historical/recovered errors and unknown-type counts separately; known skipped types never fail it
 - [ ] Test that a recovered source returns `doctor` to exit 0
-- [ ] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row
-- [ ] Verify `agent-history doctor` exits 0 after Task 9
+- [ ] Add tests with fixture trees: one missing, one partial, one unsupported, one stale provisional row, one unreachable server
+- [ ] Verify `agent-history doctor` exits 0 against the Task 9 trial DB
 
 ### Task 11: Hooks and recovery scan
-- [ ] **(user)** Claude Code `~/.claude/settings.json`: `Stop` and `SubagentStop` (`async: true`) run the absolute `agent-history ingest` path; `SessionStart` runs `scan --changed-since-last`; command is a fixed string with quoted absolute paths, stdin never interpolated into shell
+- [ ] **(user)** Claude Code `~/.claude/settings.json`: `Stop` and `SubagentStop` (`async: true`) run `"$NODE" "/abs/repo/bin/agent-history" ingest`; `SessionStart` runs `scan --changed-since-last`; command is a fixed string with quoted absolute paths, stdin never interpolated into shell
 - [ ] **(user)** Codex `~/.codex/hooks.json`: `Stop`, `SubagentStop`, `SessionStart` the same way; review and trust them via `/hooks`
 - [ ] **(user)** Probe Codex 0.163 with a logging hook in an isolated `CODEX_HOME` to record the real stdin payload and which fields are null
-- [ ] **(user)** Add a launchd agent running `scan --changed-since-last` every 15 minutes, covering interrupted turns, immediate exits and missed hooks without a new session
+- [ ] **(user)** Add a launchd agent running `scan --changed-since-last` every 15 minutes with the same absolute `node`, covering interrupted turns, immediate exits, missed hooks and server downtime without a new session
+- [ ] **(user)** Verify the launchd job connects without a Postgres.app permission prompt (check `doctor` and `ingest.log` after the first run); if denied, allow the `node` path in Postgres.app once
 - [ ] Hook failures go to `~/.agent-history/ingest.log` (0600) and `ingest_errors`, never to the session
-- [ ] **(user)** Ask for a randomized reply word and verify it in the correct session with `role=assistant` and `provisional=0` within 60 s; a match in the prompt is not success
+- [ ] **(user)** Ask for a randomized reply word and verify it in the correct session with `role=assistant` and `provisional=false` within 60 s; a match in the prompt is not success
 - [ ] **(user)** Verify a subagent run in both tools produces a child session linked to its parent
-- [ ] **(user)** Verify recovery: kill a session mid-turn and exit immediately after a turn; the launchd scan captures both within 15 minutes and `doctor` exits 0
+- [ ] **(user)** Verify recovery: kill a session mid-turn, exit immediately after a turn, and run one turn with Postgres.app stopped; the launchd scan captures all three within 15 minutes of the server being back and `doctor` exits 0
 - [ ] **(user)** Measure foreground hook dispatch/return time against the 50 ms budget independently of model and network time; report paired end-to-end runs and worker latency separately as observations
-- [ ] Verify a synthetic hook invocation against an isolated corrupted DB exits 0 and records a private diagnostic; **(user)** verify real session completion with that setup
+- [ ] Verify a synthetic hook invocation against an unreachable server and against a DB with a broken schema exits 0 and records a private diagnostic; **(user)** verify real session completion with that setup
 - [ ] **(user)** Repeat the capture and overhead checks with Codex
 
 ### Task 12: Markdown export (optional)
@@ -142,35 +156,42 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 - [ ] Verify tmp export count equals fixture session count, expected assistant fixture text is present, and no seeded secret appears; **(user)** check the live Task 11 session export
 
 ### Task 13: Discovery pointer and recall test
-- [ ] Generate the "Past sessions" pointer from config: actual DB path, the query tool that works (system `sqlite3` or a tested `python3 -c` example from Task 4), markdown path only if export is enabled
+- [ ] Connection helpers: `ownerConnection()` and `readerConnection()` from one resolved endpoint; the reader URL sets `user=agent_history_reader` and drops any owner user or password. Tests: an owner user in the URI authority and in query parameters never leaks into the reader URL
+- [ ] Generate the "Past sessions" pointer from config: the reader connection as an explicit `--dbname` URL, the absolute Postgres.app `psql` path, one tested example query per filter (project + date, keyword via `websearch_to_tsquery`, substring via `ILIKE`), the note that full-text covers only the first 100,000 characters of a message and the `ILIKE` fallback for longer ones, markdown path only if export is enabled
+- [ ] **(user)** Run the pointer's connection and verify `SELECT current_user` prints `agent_history_reader`
 - [ ] Pointer tells the agent to show dates and prefer newer sessions when decisions conflict
 - [ ] **(user)** Add it to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`
 - [ ] **(user)** Write 10 recall questions from real history with expected session ids in `tests/private/recall_cases.md` (git-ignored, 0600)
 - [ ] **(user)** Run each question in a fresh session; record queries used and whether the right session was found
 - [ ] **(user)** Verify at least 8 of 10 found in 3 queries or fewer; if not, add a `/recall` skill and re-run
-- [ ] Verify timed queries by date range, project, file path and keyword each return in < 1 s on the full DB
+- [ ] Verify timed queries (`EXPLAIN ANALYZE`) by date range, project, file path and keyword each return in < 1 s on the Task 9 trial DB, using the indexes from Task 4; then drop the trial DB and confirm it is gone
 
 ### Task 14: Retrospective skill
-- [ ] Write a skill that pulls a project's sessions for a date range and summarises decisions, reversals and open threads, each with date, session id and a short quote
+- [ ] Write a skill that pulls a project's sessions for a date range through the reader role and summarises decisions, reversals and open threads, each with date, session id and a short quote
 - [ ] **(user)** Run it on a busy project over 30 days in one request
 - [ ] **(user)** Verify by hand that each listed decision and reversal is supported by the quoted content in the cited session, and that later reversals supersede earlier decisions
 
-### Task 15: Maintenance and retention
-- [ ] **(user)** Add a monthly launchd job running `PRAGMA optimize` and `VACUUM`; ingest during maintenance retries and recovers
+### Task 15: Backups, maintenance and retention
+- [ ] `agent-history backup`: `"$PGBIN/pg_dump" -Fc --dbname=<resolved URL>` to a temp file in `~/.agent-history/backups/`, renamed to `<date>.dump` (0600) on success; only then rotate to the last 8; credentials never logged
+- [ ] `agent-history restore <dump>`: create an empty DB from `template0`, require roles to exist (provisioned by `setup database --roles-only`), `pg_restore --exit-on-error --single-transaction`, apply only migrations newer than the dump, run `doctor`
+- [ ] Test on test DBs: dump, restore by that exact sequence into another `agent_history_test_*` DB, row counts and a full-text query match, no duplicate `schema_migrations` rows; no seeded secret appears in the restored rows or in `pg_restore -f -` SQL output
+- [ ] **(user)** Allow Postgres.app's `pg_dump` and `psql` in the permission dialog once, interactively
+- [ ] **(user)** Add a weekly launchd job running `backup`
 - [ ] Test that search still works after deleting an ingested disposable fixture source
 - [ ] **(user)** Exercise Claude Code's real cleanup in an isolated `CLAUDE_CONFIG_DIR` on an aged transcript and record the result
-- [ ] Verify an ingest that hits `VACUUM` contention is recorded and recovered by the next scan
+- [ ] Document the Postgres.app major-upgrade path in the runbook: `backup` on the old server, start the new one, `setup database --roles-only`, `restore`, `doctor`
 - [ ] **(user)** Verify `doctor` exits 0 after a week of normal use
 - [ ] **(user)** Record the real 30-day observation in the design doc as pending until the oldest ingested transcript has actually been cleaned up and is still searchable
 
 ### Task 16: Setup commands and runbook for outside steps
-- [ ] `agent-history setup cleanup-period|hooks|launchd|pointer|mirror`, each dry-run by default (prints the exact change), `--apply` writes with a timestamped backup; `--home` override for tests
+- [ ] `agent-history setup database|cleanup-period|hooks|launchd|pointer|mirror`, each dry-run by default (prints the exact change or SQL), `--apply` writes with a timestamped backup where a file is changed; `--home` override for tests
+- [ ] `setup database` creates the `agent_history` database (owner: current user), applies migrations, creates `agent_history_reader`, and records the `node` path and connection URL in `~/.agent-history/config.json` (0600); `--roles-only` creates just the role for a restore; idempotent; tested only for its dry-run output during implementation
 - [ ] `setup hooks` merges into existing `settings.json` / `hooks.json` without removing other hooks, and is idempotent
-- [ ] `setup launchd` writes plists for the 15-minute scan and the monthly maintenance job, with absolute paths
+- [ ] `setup launchd` writes plists for the 15-minute scan and the weekly backup, with absolute `node` and repo paths
 - [ ] `setup pointer` appends the generated pointer once, between markers, so it can be updated or removed
 - [ ] Add `scripts/overhead.sh` (hook-on vs hook-off timing) and `scripts/capture-check.sh` (random reply word) for the live checks
-- [ ] Write `docs/RUNBOOK.md`: ordered commands for Tasks 1, 9, 11, 13, 14, 15 user items, with how to verify and undo each
-- [ ] Tests on temp homes: dry-run writes nothing; apply is idempotent; existing unrelated hooks and settings survive; backups are created
+- [ ] Write `docs/RUNBOOK.md`: ordered commands for Tasks 1, 9, 11, 13, 14, 15 user items, with how to verify and undo each (undo for `setup database` is `"$PGBIN/dropdb" agent_history` after a dump)
+- [ ] Tests on temp homes and test DBs: dry-run writes nothing; apply is idempotent; existing unrelated hooks and settings survive; backups are created
 
 ## Decisions
 
@@ -178,6 +199,9 @@ Implementation commands use the repo-local `.venv`, a repo-local uv cache (`tmp/
 | --- | --- | --- | --- |
 | Touch global config during implementation? | No; prepare `setup` commands and a runbook | User is away until tomorrow and will run them | user |
 | Live agent runs and recall questions | Left to the user, with scripts | They spend quota and need the user's memory | user |
-| Install location | Project-local `.venv` via `uv sync`, uv cache in `tmp/uv-cache`, no managed Python downloads | Repo-only scope (peer found the default uv cache is in `~/.cache/uv`); hooks use the absolute `.venv/bin/agent-history` path | default + peer |
+| Stack | Node.js + PostgreSQL in Postgres.app on this Mac | Replaces Python + SQLite | user |
+| Install location | Repo-local `node_modules` via `npm ci`, npm cache in `tmp/npm-cache`; hooks use absolute `node` and `bin/agent-history` paths | Repo-only scope; `PATH` and nvm defaults can change | default |
+| Server objects during implementation | Only the exact throwaway `agent_history_test_*` databases each run created; no roles; the real DB and reader role come from `setup database` | Shared server with ~50 other databases; roles are cluster-wide | user |
+| Corrections from Codex review of the Node/Postgres docs | Node ≥ 22.18; no role creation in tests; restore into an empty DB before migrations; `connectionTimeoutMillis`; generation-based checkpoint CAS; capped `tsvector` input; one resolved endpoint for all clients; trial DB lifetime; redrawn diagram | Verified against Node, node-postgres and PostgreSQL docs | peer |
 | Plan corrections from Codex review of `ef2d173` | Block-level row keys, prefix fingerprint instead of full hash, batch rollback on CAS failure, isolated validation DB, synthetic hook tests, explicit doctor health rules | Verified against the plan text and real data | peer |
 | Where setup logic lives | `agent-history setup …` subcommands instead of loose shell scripts | Testable on temp homes, dry-run by default | default |

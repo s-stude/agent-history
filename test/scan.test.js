@@ -74,3 +74,16 @@ test('--changed-since-last still replays an immutable source parsed by an older 
   assert.equal(r.ingested, 1);
   assert.equal((await h.db('sources').where({ path: zst.path }).first()).parser_version, 1);
 });
+
+test('history stays searchable after the source transcript is deleted', async (t) => {
+  const h = await useTestDb(t);
+  if (!h) return;
+  const roots = await tree(t);
+  await scan(h.db, { roots });
+  const { rm } = await import('node:fs/promises');
+  await rm(path.join(roots.claudeProjects, '-w-demo', `${PARENT}.jsonl`));
+  const r = await scan(h.db, { roots });
+  assert.equal(r.errors, 0);
+  const hits = await h.db('messages').whereRaw("text_tsv @@ websearch_to_tsquery('simple', 'retry backoff')").pluck('session_id');
+  assert.deepEqual(hits, [`claude:${PARENT}`]);
+});

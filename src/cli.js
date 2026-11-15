@@ -66,6 +66,12 @@ export async function main(argv = process.argv.slice(2)) {
     strict: false,
   });
   const [command] = positionals;
+  const leading = command ? argv.slice(0, argv.indexOf(command)) : argv;
+  const badLeading = leading.find((a) => a !== '--help' && a !== '-h');
+  if (badLeading && !values.help) {
+    console.error(`agent-history: unknown option before the command: ${badLeading}`);
+    return 2;
+  }
   if (values.help) {
     process.stdout.write(usage());
     return 0;

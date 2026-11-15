@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { pipeline } from 'node:stream';
 import { opendir, stat as fsStat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -187,12 +188,10 @@ export async function buildInventory(roots, { stat = fsStat } = {}) {
   return inv;
 }
 
-export function openSource(source) {
-  const raw = createReadStream(source.path);
+export function openSource(source, { open = createReadStream } = {}) {
+  const raw = open(source.path);
   if (source.encoding !== 'zst') return raw;
-  const out = createZstdDecompress();
-  raw.on('error', (err) => out.destroy(err));
-  return raw.pipe(out);
+  return pipeline(raw, createZstdDecompress(), () => {});
 }
 
 export function recordId(source, nativeRecordId, lineNo) {

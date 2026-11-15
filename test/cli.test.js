@@ -59,3 +59,13 @@ test('unknown flags are rejected before a command runs', async () => {
   assert.equal(r.code, 2);
   assert.match(r.stderr, /agent-history init: .*bogus/);
 });
+
+test('unknown options before the command are rejected without running it', async () => {
+  const env = { AGENT_HISTORY_DATABASE_URL: 'postgresql://localhost:1/agent_history_test_none' };
+  for (const args of [['--bogus', 'init'], ['--dry-run', 'init']]) {
+    const r = await cli(args, env);
+    assert.equal(r.code, 2, args.join(' '));
+    assert.match(r.stderr, /unknown option before the command/);
+    assert.doesNotMatch(r.stderr, /ECONNREFUSED|agent-history init:/);
+  }
+});

@@ -7,6 +7,8 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { text } from 'node:stream/consumers';
+import { createReadStream } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { buildInventory, openSource, recordId, rowKey } from '../src/inventory.js';
 import { makeRoots, REPO, tmpDir, write, writeZst } from './helpers/tmp.js';
 
@@ -179,4 +181,44 @@ test('a stat failure or vanished file is isolated', async (t) => {
 test('test temp dirs live inside the repo tmp folder', async (t) => {
   const dir = await tmpDir(t);
   assert.ok(dir.startsWith(path.join(REPO, 'tmp')));
+});
+
+function closed(stream) {
+  if (stream.closed) return Promise.resolve();
+  stream.on('error', () => {});
+  return new Promise((resolve) => stream.once('close', resolve));
+}
+
+function trackedOpen() {
+  const opened = [];
+  const open = (p) => {
+    const s = createReadStream(p, { highWaterMark: 1024 });
+    opened.push(s);
+    return s;
+  };
+  return { opened, open };
+}
+
+test('corrupt zst larger than one read buffer closes its input file', { timeout: 5000 }, async (t) => {
+  const { roots } = await makeRoots(t);
+  await write(path.join(roots.codexArchived, `${ROLLOUT}.zst`), randomBytes(1 << 20).toString('binary'));
+  const [src] = (await buildInventory(roots)).sources;
+  const { opened, open } = trackedOpen();
+  await assert.rejects(text(openSource(src, { open })));
+  await closed(opened[0]);
+  assert.equal(opened[0].destroyed, true);
+});
+
+test('a consumer that stops early closes the zst input file', { timeout: 5000 }, async (t) => {
+  const { roots } = await makeRoots(t);
+  await writeZst(path.join(roots.codexArchived, `${ROLLOUT}.zst`), LINE.repeat(200_000));
+  const [src] = (await buildInventory(roots)).sources;
+  const { opened, open } = trackedOpen();
+  const stream = openSource(src, { open });
+  for await (const chunk of stream) {
+    assert.ok(chunk.length > 0);
+    break;
+  }
+  await closed(opened[0]);
+  assert.equal(opened[0].destroyed, true);
 });

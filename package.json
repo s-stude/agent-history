@@ -1,0 +1,21 @@
+{
+  "name": "agent-history",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Permanent, searchable store of Claude Code and Codex sessions in PostgreSQL",
+  "type": "module",
+  "engines": {
+    "node": ">=22.15"
+  },
+  "bin": {
+    "agent-history": "bin/agent-history"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 'test/**/*.test.js'",
+    "check:doctor": "node scripts/check-doctor.js"
+  },
+  "dependencies": {
+    "knex": "3.3.0",
+    "pg": "8.23.1"
+  }
+}

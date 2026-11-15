@@ -1,0 +1,68 @@
+import { parseArgs } from 'node:util';
+import { databaseUrl, withDb } from './db.js';
+import { schemaStatus } from './schema.js';
+
+const COMMANDS = {
+  init: 'Create or migrate the history database',
+  ingest: 'Ingest one session from hook stdin JSON',
+  scan: 'Ingest every known transcript source',
+  export: 'Write markdown copies of sessions',
+  doctor: 'Report missing, partial and failed sources',
+  setup: 'Prepare outside changes (database, hooks, launchd, pointer); dry-run by default',
+};
+
+export function usage() {
+  const width = Math.max(...Object.keys(COMMANDS).map((c) => c.length));
+  const lines = Object.entries(COMMANDS).map(([name, help]) => `  ${name.padEnd(width)}  ${help}`);
+  return ['Usage: agent-history <command> [options]', '', 'Commands:', ...lines, ''].join('\n');
+}
+
+async function init() {
+  await withDb(databaseUrl(), async (db) => {
+    const [, applied] = await db.migrate.latest();
+    console.log(`migrations applied: ${applied.length}`);
+  });
+  return 0;
+}
+
+async function doctor() {
+  await withDb(databaseUrl(), async (db) => {
+    const { rows } = await db.raw('SELECT current_setting(?) AS version, current_database() AS database', ['server_version']);
+    const schema = await schemaStatus(db);
+    console.log(`server\t${rows[0].version}`);
+    console.log(`database\t${rows[0].database}`);
+    console.log(`schema\t${schema.state} (${schema.applied.length} applied, ${schema.pending.length} pending, ${schema.unknown.length} unknown)`);
+  });
+  return 0;
+}
+
+const HANDLERS = { init, doctor };
+
+export async function main(argv = process.argv.slice(2)) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    options: { help: { type: 'boolean', short: 'h' } },
+    allowPositionals: true,
+    strict: false,
+  });
+  const [command] = positionals;
+  if (values.help && !command) {
+    process.stdout.write(usage());
+    return 0;
+  }
+  if (!command || !(command in COMMANDS)) {
+    process.stderr.write(usage());
+    return 2;
+  }
+  const handler = HANDLERS[command];
+  if (!handler) {
+    console.error(`agent-history ${command}: not implemented yet`);
+    return 2;
+  }
+  try {
+    return await handler(argv.slice(1));
+  } catch (err) {
+    console.error(`agent-history ${command}: ${err.code || err.name}: ${err.message}`);
+    return 1;
+  }
+}

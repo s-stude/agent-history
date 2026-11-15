@@ -18,7 +18,8 @@ const ENV_ASSIGN = new RegExp(
   `^(?<lead>[ \\t]*(?:export[ \\t]+)?(?<name>${SECRET_NAME})[ \\t]*[=:][ \\t]*)(?<value>${ENV_VALUE})`,
   'gm',
 );
-const METRIC_NAME = /TOKENS(?:_|$)|TOKEN_(?:COUNT|LIMIT|BUDGET)$/;
+const METRIC_NAME =
+  /^(?:(?:MAX|MIN|NUM|TOTAL|INPUT|OUTPUT|PROMPT|COMPLETION|CONTEXT|THINKING|CACHED)_)*(?:TOKENS|TOKEN_(?:COUNT|LIMIT|BUDGET))(?:_(?:USED|COUNT|LIMIT|BUDGET))?$/;
 const SECRET_KEY = new RegExp(
   '^(?:api[_-]?key|apikey|x-api-key|secret|client[_-]?secret|password|passwd|' +
     'access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|authorization|private[_-]?key|' +

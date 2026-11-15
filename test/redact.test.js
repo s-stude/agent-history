@@ -174,7 +174,16 @@ test('deep structural nesting is bounded and never leaks', () => {
 });
 
 test('numeric token-count metrics are not credentials', () => {
-  for (const line of ['MAX_TOKENS: 4096', 'MAX_OUTPUT_TOKENS=8192', 'TOKENS_USED: 1234', 'NUM_TOKENS=12']) assert.equal(redactText(line), line);
+  for (const line of ['MAX_TOKENS: 4096', 'MAX_OUTPUT_TOKENS=8192', 'TOKENS_USED: 1234', 'NUM_TOKENS=12', 'THINKING_TOKEN_BUDGET=2048']) {
+    assert.equal(redactText(line), line);
+  }
+});
+
+test('numeric values of credential names containing TOKENS are redacted', () => {
+  for (const name of ['API_TOKENS', 'TOKENS_PASSWORD', 'TOKENS_API_KEY', 'GITHUB_TOKENS']) {
+    assert.equal(redactText(`${name}=123456789`), `${name}=[REDACTED:env]`, name);
+    assert.equal(JSON.parse(sanitizeLine(JSON.stringify({ t: `${name}=123456789` }))).t, `${name}=[REDACTED:env]`, name);
+  }
 });
 
 test('JSON strings encoded twice or more are sanitized inside', () => {

@@ -14,9 +14,9 @@ Rule for every task: destructive tests (corruption, cleanup, moved or replaced f
 Items marked **(user)** below are prepared but not run.
 
 ## Validation Commands
-- `python3 -m pytest -q`
-- `agent-history --help`
-- `agent-history doctor`
+- `uv run pytest -q`
+- `.venv/bin/agent-history --help`
+- `.venv/bin/agent-history doctor`
 
 ### Task 1: Safety net against transcript cleanup
 - [ ] **(user)** Confirm in Claude Code docs that `cleanupPeriodDays: 0` does not disable transcripts; then set `"cleanupPeriodDays": 36500` in `~/.claude/settings.json`
@@ -26,13 +26,13 @@ Items marked **(user)** below are prepared but not run.
 - [ ] **(user)** If mirrored, verify per-tool file counts (`.jsonl` and `.jsonl.zst`) match source and `stat -f %Lp ~/.agent-history/raw` prints 700
 
 ### Task 2: Project skeleton and install
-- [ ] Create `agent_history/` package with `__main__.py`, `cli.py`, `db.py`, `inventory.py`, `redact.py`, `ingest.py`, `parsers/claude.py`, `parsers/codex.py`
-- [ ] Add CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor` (stubs)
-- [ ] Add `pyproject.toml`: `requires-python = ">=3.14"`, stdlib only, `agent-history` console script, pytest as dev dependency
-- [ ] Install with `python3 -m pip install --user -e .` (or `pipx install -e .`); record the absolute interpreter and `agent-history` paths in the README for hooks and launchd
-- [ ] Add `.gitignore`: `*.db`, `*.db-wal`, `*.db-shm`, `*.db-journal`, `tmp/`, `__pycache__/`, `.peer-chats/`, `tests/private/`
-- [ ] Add a CLI smoke test (`--help` exits 0 and lists all subcommands) so pytest never collects zero tests
-- [ ] Verify `agent-history --help` runs from a fresh shell and pytest passes
+- [x] Create `agent_history/` package with `__main__.py`, `cli.py`, `db.py`, `inventory.py`, `redact.py`, `ingest.py`, `parsers/claude.py`, `parsers/codex.py`
+- [x] Add CLI subcommands `init`, `ingest`, `scan`, `export`, `doctor` (stubs)
+- [x] Add `pyproject.toml`: `requires-python = ">=3.14"`, stdlib only, `agent-history` console script, pytest as dev dependency
+- [x] Install into a project-local `.venv` with `uv sync` (repo-only scope); record the absolute interpreter and `agent-history` paths in the README for hooks and launchd
+- [x] Add `.gitignore`: `*.db`, `*.db-wal`, `*.db-shm`, `*.db-journal`, `tmp/`, `__pycache__/`, `.peer-chats/`, `tests/private/`
+- [x] Add a CLI smoke test (`--help` exits 0 and lists all subcommands) so pytest never collects zero tests
+- [x] Verify `agent-history --help` runs from a fresh shell and pytest passes
 
 ### Task 3: Source inventory and identity contract
 - [ ] Inventory roots: `~/.claude/projects` (main and `*/subagents/*.jsonl`), `~/.codex/sessions` and `~/.codex/archived_sessions` (`.jsonl` and `.jsonl.zst`); roots overridable for tests
@@ -169,4 +169,5 @@ Items marked **(user)** below are prepared but not run.
 | --- | --- | --- | --- |
 | Touch global config during implementation? | No; prepare `setup` commands and a runbook | User is away until tomorrow and will run them | user |
 | Live agent runs and recall questions | Left to the user, with scripts | They spend quota and need the user's memory | user |
+| Install location | Project-local `.venv` via `uv sync`, not `pip --user` | Repo-only scope; hooks use the absolute `.venv/bin/agent-history` path | default |
 | Where setup logic lives | `agent-history setup …` subcommands instead of loose shell scripts | Testable on temp homes, dry-run by default | default |

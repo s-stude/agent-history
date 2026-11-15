@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { databaseUrl, withDb } from './db.js';
 import { schemaStatus } from './schema.js';
+import { migrateWithLock } from './migrate.js';
 import { buildInventory, rootsFromEnv } from './inventory.js';
 
 const COMMANDS = {
@@ -24,10 +25,8 @@ function noOptions(args) {
 
 async function init(args) {
   noOptions(args);
-  await withDb(databaseUrl(), async (db) => {
-    const [, applied] = await db.migrate.latest();
-    console.log(`migrations applied: ${applied.length}`);
-  });
+  const applied = await migrateWithLock(databaseUrl());
+  console.log(`migrations applied: ${applied.length}`);
   return 0;
 }
 

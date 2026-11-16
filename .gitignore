@@ -6,3 +6,4 @@ test/private/
 *.dump
 .idea/
 .env
+.claude/skills/retrospective

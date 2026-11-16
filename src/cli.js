@@ -6,7 +6,7 @@ import { logLine, readStdin, runHook } from './hook.js';
 import { scan } from './scan.js';
 import { doctor as runDoctor } from './doctor.js';
 import { exportRoot, exportSessions } from './export.js';
-import { setup as runSetup } from './setup.js';
+import { setup as runSetup, snapshotAgentConfig } from './setup.js';
 import { backup, restore } from './backup.js';
 import { historyHome } from './paths.js';
 import path from 'node:path';
@@ -20,6 +20,7 @@ const COMMANDS = {
   doctor: 'Report missing, partial and failed sources',
   setup: 'Prepare outside changes: database|cleanup-period|hooks|launchd|pointer|mirror|export; dry-run unless --apply',
   backup: 'Dump the database to ~/.agent-history/backups (keeps 8)',
+  'snapshot-config': 'Copy agent settings, hooks, CLAUDE.md/AGENTS.md and plists to ~/.agent-history/config-backups',
   restore: 'Restore a dump into a new database: restore <dump> --to <name>',
 };
 
@@ -129,6 +130,12 @@ async function setupCommand(args) {
   return 0;
 }
 
+async function snapshotCommand(args) {
+  const { values } = parseArgs({ args, options: { home: { type: 'string' } }, strict: true });
+  await snapshotAgentConfig({ home: values.home });
+  return 0;
+}
+
 async function backupCommand(args) {
   const { values } = parseArgs({ args, options: { dir: { type: 'string' } }, strict: true });
   const r = await backup(databaseUrl(), values.dir ?? path.join(historyHome(), 'backups'));
@@ -157,6 +164,7 @@ const HANDLERS = {
   export: exportCommand,
   setup: setupCommand,
   backup: backupCommand,
+  'snapshot-config': snapshotCommand,
   restore: restoreCommand,
 };
 

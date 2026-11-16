@@ -253,3 +253,20 @@ test('an explicit --home ignores ambient root and native-home variables', async 
   await setup('mirror', { home: h, env, log: (l) => logs.push(l) });
   assert.ok(logs.every((l) => !l.includes('/custom/')), logs.join('\n'));
 });
+
+test('snapshot-config copies existing agent config privately and never overwrites an earlier snapshot', async (t) => {
+  const { h, L } = await home(t);
+  const { snapshotAgentConfig } = await import('../src/setup.js');
+  const { stat } = await import('node:fs/promises');
+  const now = new Date('2026-11-16T00:00:00Z');
+  const a = await snapshotAgentConfig({ home: h, now, log: () => {} });
+  await writeFile(L.claudeSettings, '{"changed":true}');
+  const b = await snapshotAgentConfig({ home: h, now, log: () => {} });
+  assert.notEqual(a.dir, b.dir);
+  assert.deepEqual(a.manifest.map((m) => m.original).sort(), [L.claudeMd, L.claudeSettings].sort());
+  const first = a.manifest.find((m) => m.original === L.claudeSettings).copy;
+  assert.match(await readFile(first, 'utf8'), /"theme":"dark"/);
+  assert.equal((await stat(first)).mode & 0o777, 0o600);
+  assert.equal((await stat(a.dir)).mode & 0o777, 0o700);
+  assert.equal(JSON.parse(await readFile(path.join(b.dir, 'manifest.json'), 'utf8')).length, 2);
+});

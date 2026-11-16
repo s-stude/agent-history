@@ -8,7 +8,7 @@ import { makeRoots } from './helpers/tmp.js';
 
 const run = promisify(execFile);
 const BIN = fileURLToPath(new URL('../bin/agent-history', import.meta.url));
-const COMMANDS = ['init', 'ingest', 'scan', 'export', 'doctor', 'setup', 'backup', 'restore'];
+const COMMANDS = ['init', 'ingest', 'scan', 'export', 'doctor', 'setup', 'backup', 'snapshot-config', 'restore'];
 
 function cli(args, env = {}) {
   return run(process.execPath, [BIN, ...args], { env: { ...process.env, ...env }, cwd: '/' }).then(

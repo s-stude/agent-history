@@ -23,6 +23,16 @@ Hooks and launchd jobs run the CLI from this repository, so they read the same `
 
 Transcript roots resolve as `AGENT_HISTORY_*` variables (shell or `.env`), then `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, then the saved config, then `~/.claude` / `~/.codex`. Passwords belong in `~/.pgpass` (0600), never in `.env` or the config.
 
+## Snapshot your agent config first
+
+Before anything changes, keep a copy of everything setup can touch: `~/.claude/settings.json` (hooks and `cleanupPeriodDays`), `~/.codex/hooks.json`, `CLAUDE.md`, `AGENTS.md` and the agent-history launchd plists.
+
+```sh
+npm run backup:agent-config
+```
+
+It writes them to `~/.agent-history/config-backups/<timestamp>/` (folder 0700, files 0600) with a `manifest.json`, and prints a `cp …` restore command per file. Each run makes a new folder; nothing is overwritten. On top of this, every `setup … -- --apply` also saves the previous version of a file it changes as `<file>.bak-<timestamp>` next to it.
+
 ## 1. Stop Claude Code from deleting old transcripts — do this first
 
 ```sh
@@ -75,6 +85,7 @@ npm run doctor
 ## 4. Hooks and the 15-minute recovery scan
 
 ```sh
+npm run backup:agent-config                # fresh snapshot right before the hooks change
 npm run setup:hooks                        # shows ~/.claude/settings.json and ~/.codex/hooks.json after the merge
 npm run setup:hooks -- --apply
 npm run setup:launchd -- --apply
@@ -103,7 +114,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.backup
 - **Recovery:** kill a session mid-turn, exit right after a turn, and run one turn with Postgres.app stopped (then start it again). Within 15 minutes of the server coming back, `npm run doctor` exits 0 and all three turns are in the database.
 - **launchd permissions:** after the scan job's first run, `~/.agent-history/com.agent-history.scan.err.log` should be empty, and `npm run doctor` should show no `log_after_last_ingest` warning. If Postgres.app denied the connection, open Postgres.app → Settings → App Permissions and allow the recorded node.
 - **Overhead:** no tool here measures the foreground dispatch/return cost of the installed async hook, because neither agent exposes those timings. The 50 ms acceptance check therefore stays open. Run `npm run check:overhead -- <some transcript.jsonl> 10` for unbudgeted diagnostics: shell spawn (~5 ms here) and background worker latency (~90 ms here). Adding `--dispatch` measures answer-to-probe-start (10 model calls); `--e2e` adds hooks on/off `claude -p` medians (20 model calls). If hooks ever feel slow, compare an interactive session with and without them (`claude --settings` with `{"disableAllHooks": true}`).
-- **Undo:** restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`. Run `launchctl bootout gui/$(id -u)/com.agent-history.scan` (and `.backup`), then delete the two plists.
+- **Undo:** run the `cp …` restore commands printed by `backup:agent-config` (or restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`). Run `launchctl bootout gui/$(id -u)/com.agent-history.scan` (and `.backup`), then delete the two plists.
 
 ## 5. Tell the agents where history lives
 
@@ -154,6 +165,7 @@ ln -s "$PWD/skills/retrospective" ~/.claude/skills/retrospective
 | --- | --- |
 | `npm run init` / `doctor` / `scan` / `scan:changed` / `scan:dry` / `export` / `backup` / `restore -- <dump> --to <db>` | the CLI command of the same name |
 | `npm run setup:<target>` (`cleanup-period`, `mirror`, `database`, `roles`, `hooks`, `launchd`, `export`, `pointer`) | `setup <target>`, dry run; add `-- --apply` |
+| `npm run backup:agent-config` | snapshot of agent settings, hooks, CLAUDE.md/AGENTS.md and plists into `~/.agent-history/config-backups/` |
 | `npm run psql [-- [--db NAME] args]` / `psql:reader [-- args]` | Postgres.app `psql` on the resolved endpoint, as owner / read-only role; `--db` swaps only the database name |
 | `npm run check:capture:claude` / `check:capture:codex` / `check:overhead` / `check:redaction` / `check:doctor` | live checks and diagnostics |
 | `npm run ah -- <command>` | any other CLI command |

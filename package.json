@@ -21,6 +21,7 @@
     "scan:dry": "node --max-old-space-size=192 bin/agent-history scan --dry-run",
     "export": "node --max-old-space-size=192 bin/agent-history export",
     "backup": "node --max-old-space-size=192 bin/agent-history backup",
+    "backup:agent-config": "node --max-old-space-size=192 bin/agent-history snapshot-config",
     "restore": "node --max-old-space-size=192 bin/agent-history restore",
     "setup:cleanup-period": "node --max-old-space-size=192 bin/agent-history setup cleanup-period",
     "setup:mirror": "node --max-old-space-size=192 bin/agent-history setup mirror",

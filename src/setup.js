@@ -303,3 +303,45 @@ async function setupDatabase(L, { apply, url, rolesOnly, node, log }) {
     log(`wrote\t${path.join(L.historyHome, 'config.json')}`);
   }
 }
+
+export async function snapshotAgentConfig({ home, env = process.env, now = new Date(), log = console.log } = {}) {
+  const L = layout({ home, env });
+  const root = path.join(L.historyHome, 'config-backups');
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  await chmod(L.historyHome, 0o700).catch(() => {});
+  await chmod(root, 0o700);
+  let dir;
+  for (let n = 0; ; n++) {
+    dir = path.join(root, `${stamp(now)}${n ? `-${n}` : ''}`);
+    try {
+      await mkdir(dir, { mode: 0o700 });
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+  const targets = [
+    ['claude-settings.json', L.claudeSettings],
+    ['codex-hooks.json', L.codexHooks],
+    ['CLAUDE.md', L.claudeMd],
+    ['AGENTS.md', L.agentsMd],
+    [`${SCAN_LABEL}.plist`, path.join(L.launchAgents, `${SCAN_LABEL}.plist`)],
+    [`${BACKUP_LABEL}.plist`, path.join(L.launchAgents, `${BACKUP_LABEL}.plist`)],
+  ];
+  const manifest = [];
+  for (const [name, original] of targets) {
+    if ((await readText(original)) === null) {
+      log(`absent\t${original}`);
+      continue;
+    }
+    const copy = path.join(dir, name);
+    await copyFile(original, copy, constants.COPYFILE_EXCL);
+    await chmod(copy, 0o600);
+    manifest.push({ copy, original });
+    log(`saved\t${original}`);
+  }
+  await writeFile(path.join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+  log(`snapshot\t${dir}`);
+  for (const { copy, original } of manifest) log(`restore with: cp ${shellQuote(copy)} ${shellQuote(original)}`);
+  return { dir, manifest };
+}

@@ -296,6 +296,7 @@ async function planSource(db, source) {
     state: null,
     skip: false,
     expectedFingerprint: null,
+    status: current?.status ?? null,
   };
   const stale = current && current.parser_version !== ctx.parserVersion;
   if (source.immutable) {
@@ -374,7 +375,7 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, batchBytes = B
     total.lines++;
     if (count >= batchLines || bytes >= batchBytes) await flush(false);
   }
-  if (total.lines === 0 && !ctx.reset && ctx.expectedGeneration !== null) {
+  if (total.lines === 0 && !ctx.reset && ctx.expectedGeneration !== null && !source.immutable && ctx.status === 'done') {
     return { skipped: true, lines: 0, rows: 0 };
   }
   await flush(true);

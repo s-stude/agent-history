@@ -467,3 +467,31 @@ test('a run that reads no complete line leaves the checkpoint untouched', async 
   await ingestSource(e.db, await e.source(fresh));
   assert.ok(await checkpoint(e.db, fresh), 'a new source still gets its first checkpoint row');
 });
+
+test('an archive interrupted after its last data batch is completed on retry', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  const lines = await codexLines();
+  const zst = path.join(e.roots.codexArchived, `${CODEX_NAME}.zst`);
+  await writeZst(zst, `${lines.join('\n')}\n`);
+  await assert.rejects(
+    ingestSource(e.db, await e.source(zst), {
+      batchLines: 1,
+      onBatch: ({ lastLine }) => {
+        if (lastLine === lines.length) throw new Error('stopped before the final commit');
+      },
+    }),
+    /stopped/,
+  );
+  let cp = await checkpoint(e.db, zst);
+  assert.equal(cp.status, 'partial');
+  assert.equal(cp.last_line, lines.length);
+  const { recordError } = await import('../src/ingest.js');
+  await recordError(e.db, { sourcePath: zst, errorClass: 'Synthetic' });
+  const r = await ingestSource(e.db, await e.source(zst));
+  assert.equal(r.skipped, false);
+  cp = await checkpoint(e.db, zst);
+  assert.equal(cp.status, 'done');
+  assert.equal((await e.db('ingest_errors').whereNull('resolved_at')).length, 0);
+  assert.equal((await ingestSource(e.db, await e.source(zst))).skipped, true, 'once done, it is skipped');
+});

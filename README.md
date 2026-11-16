@@ -48,3 +48,7 @@ Hooks and launchd jobs call the CLI by absolute path, never through `PATH`, as `
 - node: the absolute path of the node that ran `setup` (for example `~/.nvm/versions/node/v22.22.0/bin/node`); allow it once in Postgres.app's permission dialog
 - CLI: `<repo>/bin/agent-history`
 - Postgres.app client tools: `/Applications/Postgres 18.app/Contents/Versions/latest/bin` (the `psql` on `PATH` is Homebrew 16)
+
+## License
+
+MIT, see [LICENSE](LICENSE).

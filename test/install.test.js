@@ -125,3 +125,19 @@ test('the probe reports only this run, and fails on a failed or empty run', asyn
   assert.equal(ok, 0);
   assert.deepEqual(lines, ['Stop: hook_event_name=string, turn_id=string']);
 });
+
+test('the probe fails when this run recorded only malformed or non-object payloads', async (t) => {
+  const dir = await tmpDir(t);
+  const probe = path.join(dir, 'probe');
+  const out = () => path.join(probe, 'payload.jsonl');
+  for (const payload of ['not JSON', 'null', '[1,2]', '"text"', '{"no_event":true}']) {
+    const lines = [];
+    const code = await runProbe({ dir: probe, spawnFn: fakeSpawn({ code: 0, payload, out }), log: (l) => lines.push(l) });
+    assert.equal(code, 1, payload);
+    assert.match(lines.at(-1), /^FAIL: no valid hook payload/);
+  }
+  const lines = [];
+  const mixed = await runProbe({ dir: probe, spawnFn: fakeSpawn({ code: 0, payload: 'garbage\n{"hook_event_name":"Stop"}', out }), log: (l) => lines.push(l) });
+  assert.equal(mixed, 0);
+  assert.deepEqual(lines, ['unparsable payload line', 'Stop: hook_event_name=string']);
+});

@@ -20,16 +20,23 @@ export async function prepare(dir = PROBE_HOME, realCodex = process.env.CODEX_HO
 }
 
 export function summarize(text) {
-  const lines = [];
+  const valid = [];
+  const problems = [];
   for (const line of text.split('\n').filter(Boolean)) {
+    let p;
     try {
-      const p = JSON.parse(line);
-      lines.push(`${p.hook_event_name ?? '?'}: ${Object.entries(p).map(([k, v]) => `${k}=${v === null ? 'null' : typeof v}`).join(', ')}`);
+      p = JSON.parse(line);
     } catch {
-      lines.push('unparsable payload line');
+      problems.push('unparsable payload line');
+      continue;
     }
+    if (!p || typeof p !== 'object' || Array.isArray(p) || typeof p.hook_event_name !== 'string') {
+      problems.push('payload line is not a hook event object');
+      continue;
+    }
+    valid.push(`${p.hook_event_name}: ${Object.entries(p).map(([k, v]) => `${k}=${v === null ? 'null' : typeof v}`).join(', ')}`);
   }
-  return lines;
+  return { valid, problems };
 }
 
 export async function runProbe({ dir = PROBE_HOME, spawnFn = spawn, log = console.log } = {}) {
@@ -51,12 +58,13 @@ export async function runProbe({ dir = PROBE_HOME, spawnFn = spawn, log = consol
     log(`FAIL: codex exec exited ${code}`);
     return code || 1;
   }
-  const lines = summarize(text);
-  if (!lines.length) {
-    log('FAIL: no payload recorded in this run; were the probe hooks trusted via /hooks?');
+  const { valid, problems } = summarize(text);
+  for (const p of problems) log(p);
+  if (!valid.length) {
+    log('FAIL: no valid hook payload recorded in this run; were the probe hooks trusted via /hooks?');
     return 1;
   }
-  for (const l of lines) log(l);
+  for (const l of valid) log(l);
   return 0;
 }
 

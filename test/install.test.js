@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { lstat, mkdir, readFile, readlink, symlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readlink, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpDir } from './helpers/tmp.js';
@@ -57,7 +57,15 @@ test('the Codex probe home records payloads without touching the real ~/.codex',
   const dir = await tmpDir(t);
   const real = path.join(dir, 'real-codex');
   await mkdir(real);
+  await writeFile(path.join(real, 'config.toml'), 'model = "x"\n[hooks]\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = "real-hook"\n[hooks.state."/x:stop:0:0"]\ntrusted = true\n[projects."/p"]\ntrust_level = "trusted"\n');
   const { out } = await prepare(path.join(dir, 'probe'), real);
+  const copied = await readFile(path.join(dir, 'probe', 'config.toml'), 'utf8');
+  assert.match(copied, /model = "x"/);
+  assert.match(copied, /\[projects\."\/p"\]/);
+  assert.doesNotMatch(copied, /hooks|real-hook/);
+  await writeFile(path.join(dir, 'probe', 'config.toml'), `${copied}\n[hooks.state."probe:stop:0:0"]\ntrusted = true\n`);
+  await prepare(path.join(dir, 'probe'), real);
+  assert.match(await readFile(path.join(dir, 'probe', 'config.toml'), 'utf8'), /probe:stop:0:0/, 'trust written by /hooks survives a second prepare');
   const hooks = JSON.parse(await readFile(path.join(dir, 'probe', 'hooks.json'), 'utf8'));
   assert.deepEqual(Object.keys(hooks.hooks).sort(), ['SessionStart', 'Stop', 'SubagentStop']);
   const child = (await import('node:child_process')).spawn('/bin/sh', ['-c', hooks.hooks.Stop[0].hooks[0].command]);
@@ -110,6 +118,7 @@ test('the probe reports only this run, and fails on a failed or empty run', asyn
   const out = () => path.join(probe, 'payload.jsonl');
   const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
   await md(probe, { recursive: true });
+  await prepare(probe, path.join(dir, 'no-real-codex'));
   const stale = '{"hook_event_name":"Stop","old":"x"}';
   const quiet = () => {};
 
@@ -129,6 +138,7 @@ test('the probe reports only this run, and fails on a failed or empty run', asyn
 test('the probe fails when this run recorded only malformed or non-object payloads', async (t) => {
   const dir = await tmpDir(t);
   const probe = path.join(dir, 'probe');
+  await prepare(probe, path.join(dir, 'no-real-codex'));
   const out = () => path.join(probe, 'payload.jsonl');
   for (const payload of ['not JSON', 'null', '[1,2]', '"text"', '{"no_event":true}']) {
     const lines = [];
@@ -140,4 +150,11 @@ test('the probe fails when this run recorded only malformed or non-object payloa
   const mixed = await runProbe({ dir: probe, spawnFn: fakeSpawn({ code: 0, payload: 'garbage\n{"hook_event_name":"Stop"}', out }), log: (l) => lines.push(l) });
   assert.equal(mixed, 0);
   assert.deepEqual(lines, ['unparsable payload line', 'Stop: hook_event_name=string']);
+});
+
+test('the probe refuses to run before it was prepared', async (t) => {
+  const dir = await tmpDir(t);
+  const lines = [];
+  assert.equal(await runProbe({ dir: path.join(dir, 'never'), spawnFn: () => { throw new Error('must not spawn'); }, log: (l) => lines.push(l) }), 1);
+  assert.match(lines[0], /not prepared/);
 });

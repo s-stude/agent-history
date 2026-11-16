@@ -96,11 +96,11 @@ npm run launchd:load -- --apply             # loads the 15-minute scan and the w
 - **Claude Code:** `Stop` and `SubagentStop` run `ingest` (async), and `SessionStart` runs `scan --changed-since-last`. Your other hooks are kept.
 - **Codex:** open Codex, run `/hooks`, then review and trust the three new hooks (manual: trust is your decision). Before relying on them, record the real payload once in an isolated home under `./tmp` (your `~/.codex` is not touched):
   ```sh
-  npm run check:codex-hooks                   # prepares tmp/codex-probe and prints the manual trust step
+  npm run check:codex-hooks                   # prepares tmp/codex-probe once (your config.toml without its [hooks] tables) and prints the trust step
   CODEX_HOME="$PWD/tmp/codex-probe" codex     # run /hooks, trust the probe hooks, quit
   npm run check:codex-hooks -- --run          # one codex exec (one model call); prints each payload's field names and types
   ```
-  Check that `session_id`, `transcript_path`, `turn_id` and `last_assistant_message` are present (or note which are null).
+  Check that `session_id`, `transcript_path`, `turn_id` and `last_assistant_message` are present (or note which are null). Trust is stored in the probe's `config.toml`; to start over, `rm -rf tmp/codex-probe`.
 - **Capture,** in a real interactive session. One-shot `claude -p` and `codex exec` runs cancel unfinished async hooks at exit, so they can't prove capture.
   ```sh
   npm run check:capture:claude      # starts claude with a known session id and a random-word prompt

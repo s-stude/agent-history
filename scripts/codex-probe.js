@@ -2,20 +2,42 @@
 //   npm run check:codex-hooks              prepare: writes tmp/codex-probe/{config.toml,hooks.json} and prints next steps
 //   npm run check:codex-hooks -- --run     after you trusted the probe hook: one `codex exec` (spends a model call), prints payloads
 import { spawn } from 'node:child_process';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const PROBE_HOME = fileURLToPath(new URL('../tmp/codex-probe', import.meta.url));
 
+export function stripHookTables(toml) {
+  const out = [];
+  let skipping = false;
+  for (const line of toml.split('\n')) {
+    const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/.exec(line);
+    if (header) skipping = /^"?hooks"?(\.|$)/.test(header[1]);
+    if (!skipping) out.push(line);
+  }
+  return out.join('\n');
+}
+
+async function exists(file) {
+  return access(file).then(() => true, () => false);
+}
+
 export async function prepare(dir = PROBE_HOME, realCodex = process.env.CODEX_HOME || path.join(homedir(), '.codex')) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  await copyFile(path.join(realCodex, 'config.toml'), path.join(dir, 'config.toml')).catch(() => {});
+  const config = path.join(dir, 'config.toml');
+  if (!(await exists(config))) {
+    const real = await readFile(path.join(realCodex, 'config.toml'), 'utf8').catch(() => '');
+    await writeFile(config, stripHookTables(real), { mode: 0o600 });
+  }
   const out = path.join(dir, 'payload.jsonl');
-  const command = `cat >> '${out.replaceAll("'", `'\\''`)}'; printf '\\n' >> '${out.replaceAll("'", `'\\''`)}'`;
+  const quoted = `'${out.replaceAll("'", `'\\''`)}'`;
+  const command = `cat >> ${quoted}; printf '\\n' >> ${quoted}`;
   const hooks = { hooks: Object.fromEntries(['SessionStart', 'Stop', 'SubagentStop'].map((e) => [e, [{ hooks: [{ type: 'command', command }] }]])) };
-  await writeFile(path.join(dir, 'hooks.json'), `${JSON.stringify(hooks, null, 2)}\n`, { mode: 0o600 });
+  const hooksFile = path.join(dir, 'hooks.json');
+  const content = `${JSON.stringify(hooks, null, 2)}\n`;
+  if ((await readFile(hooksFile, 'utf8').catch(() => null)) !== content) await writeFile(hooksFile, content, { mode: 0o600 });
   return { dir, out };
 }
 
@@ -40,7 +62,11 @@ export function summarize(text) {
 }
 
 export async function runProbe({ dir = PROBE_HOME, spawnFn = spawn, log = console.log } = {}) {
-  const { out } = await prepare(dir);
+  if (!(await exists(path.join(dir, 'hooks.json'))) || !(await exists(path.join(dir, 'config.toml')))) {
+    log('FAIL: probe home not prepared; run `npm run check:codex-hooks` first and trust the hooks');
+    return 1;
+  }
+  const out = path.join(dir, 'payload.jsonl');
   await writeFile(out, '', { mode: 0o600 });
   const code = await new Promise((resolve) => {
     let child;
@@ -77,7 +103,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exitCode = await runProbe();
   } else {
     const { dir } = await prepare();
-    console.log(`Prepared ${dir}. Manual step (hook trust stays yours):`);
+    console.log(`Prepared ${dir} (your config.toml copied once without its [hooks] tables; delete the folder to start over).`);
+    console.log('Manual step (hook trust stays yours):');
     console.log(`  CODEX_HOME='${dir}' codex      # then run /hooks, review and trust the probe hooks, and quit`);
     console.log('Then: npm run check:codex-hooks -- --run');
   }

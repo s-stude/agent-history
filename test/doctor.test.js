@@ -146,3 +146,14 @@ test('a recently written session behind its checkpoint is a warning; after the g
   assert.equal(await e.level('claude_partial'), 'fail');
   assert.equal(r.checks.find((c) => c.check === 'claude_catching_up'), undefined);
 });
+
+test('doctor output puts a blank line between groups', async () => {
+  const { formatChecks } = await import('../src/doctor.js');
+  const text = formatChecks([
+    { level: 'info', check: 'server', detail: '18', group: 'server' },
+    { level: 'info', check: 'database', detail: 'x', group: 'server' },
+    { level: 'ok', check: 'schema', detail: 'current', group: 'schema' },
+    { level: 'ok', check: 'claude_missing', detail: '0', group: 'claude' },
+  ]);
+  assert.equal(text, 'info\tserver\t18\ninfo\tdatabase\tx\n\nok\tschema\tcurrent\n\nok\tclaude_missing\t0');
+});

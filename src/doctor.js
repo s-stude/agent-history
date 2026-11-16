@@ -135,7 +135,8 @@ async function newestBackup(home) {
 
 export async function doctor(db, { roots = rootsFromEnv(), env = process.env, now = new Date() } = {}) {
   const checks = [];
-  const add = (level, check, detail) => checks.push({ level, check, detail: String(detail) });
+  let group = 'server';
+  const add = (level, check, detail) => checks.push({ level, check, detail: String(detail), group });
   const home = historyHome(env);
 
   const { rows } = await db.raw("SELECT current_setting('server_version') AS v, current_database() AS d, pg_database_size(current_database()) AS size");
@@ -143,6 +144,7 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
   add('info', 'database', rows[0].d);
   add('info', 'db_size_mb', Math.round(Number(rows[0].size) / 2 ** 20));
 
+  group = 'schema';
   const schema = await schemaStatus(db);
   add(schema.state === 'current' ? 'ok' : 'fail', 'schema', `${schema.state} (${schema.applied.length} applied, ${schema.pending.length} pending, ${schema.unknown.length} unknown)`);
   if (schema.state !== 'current') return finish(checks);
@@ -150,6 +152,7 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
   const inv = await buildInventory(roots);
   const problems = await sourceProblems(db, inv, now);
   for (const tool of ['claude', 'codex']) {
+    group = tool;
     for (const kind of ['missing', 'partial', 'stale']) {
       const list = problems[kind].filter((s) => s.tool === tool);
       add(list.length ? 'fail' : 'ok', `${tool}_${kind}`, list.length ? `${list.length}: ${list.slice(0, 3).map((s) => path.basename(s.path)).join(', ')}` : 0);
@@ -159,11 +162,13 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
       add('warn', `${tool}_catching_up`, `${recent.length} written in the last ${CATCH_UP_GRACE_MIN} min, not yet fully ingested: ${recent.slice(0, 3).map((s) => path.basename(s.path)).join(', ')}`);
     }
   }
+  group = 'inventory';
   add(inv.unsupported.length ? 'fail' : 'ok', 'unsupported', inv.unsupported.length);
   add(inv.unreadable.length ? 'fail' : 'ok', 'unreadable', inv.unreadable.length);
 
   const [{ n: unresolved }] = await db('ingest_errors').whereNull('resolved_at').count({ n: '*' });
   const [{ n: resolved }] = await db('ingest_errors').whereNotNull('resolved_at').count({ n: '*' });
+  group = 'errors';
   add(Number(unresolved) ? 'fail' : 'ok', 'unresolved_errors', unresolved);
   add('info', 'recovered_errors', resolved);
 
@@ -175,11 +180,13 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
   add('info', 'unknown_types', unknown.map((u) => `${u.tool}:${u.type}${u.subtype ? '/' + u.subtype : ''}=${u.count}`).join(', ') || 0);
 
   const [{ last }] = await db('sources').max({ last: 'updated_at' });
+  group = 'activity';
   add('info', 'last_ingest', last ? last.toISOString() : 'never');
   const newerLog = await logAfter(home, last);
   add(newerLog ? 'warn' : 'ok', 'log_after_last_ingest', newerLog);
 
   const modes = await modeProblems(home);
+  group = 'local';
   add(modes.length ? 'fail' : 'ok', 'file_modes', modes.length ? modes.join('; ') : 'ok');
 
   const reader = await roleStatus(db);
@@ -198,4 +205,13 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
 
 function finish(checks) {
   return { checks, failed: checks.some((c) => c.level === 'fail') };
+}
+
+export function formatChecks(checks) {
+  const lines = [];
+  checks.forEach((c, i) => {
+    if (i > 0 && c.group !== checks[i - 1].group) lines.push('');
+    lines.push(`${c.level}\t${c.check}\t${c.detail}`);
+  });
+  return lines.join('\n');
 }

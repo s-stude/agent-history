@@ -4,7 +4,7 @@ import { schemaStatus } from './schema.js';
 import { migrateWithLock } from './migrate.js';
 import { logLine, readStdin, runHook } from './hook.js';
 import { scan } from './scan.js';
-import { doctor as runDoctor } from './doctor.js';
+import { doctor as runDoctor, formatChecks } from './doctor.js';
 import { exportRoot, exportSessions } from './export.js';
 import { setup as runSetup, snapshotAgentConfig } from './setup.js';
 import { backup, restore } from './backup.js';
@@ -45,7 +45,7 @@ async function doctorCommand(args) {
   noOptions(args);
   return withDb(databaseUrl(), async (db) => {
     const { checks, failed } = await runDoctor(db);
-    for (const c of checks) console.log(`${c.level}\t${c.check}\t${c.detail}`);
+    console.log(formatChecks(checks));
     return failed ? 1 : 0;
   });
 }

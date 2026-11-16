@@ -36,7 +36,12 @@
     "check:overhead": "scripts/overhead.sh",
     "check:redaction": "node scripts/redaction-sample.js",
     "psql": "node scripts/psql.js",
-    "psql:reader": "node scripts/psql.js --reader"
+    "psql:reader": "node scripts/psql.js --reader",
+    "launchd:load": "node scripts/install.js launchd:load",
+    "launchd:unload": "node scripts/install.js launchd:unload",
+    "skill:install": "node scripts/install.js skill:install",
+    "skill:uninstall": "node scripts/install.js skill:uninstall",
+    "check:codex-hooks": "node scripts/codex-probe.js"
   },
   "dependencies": {
     "knex": "3.3.0",

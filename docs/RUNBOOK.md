@@ -88,19 +88,17 @@ npm run doctor
 npm run backup:agent-config                # fresh snapshot right before the hooks change
 npm run setup:hooks                        # shows ~/.claude/settings.json and ~/.codex/hooks.json after the merge
 npm run setup:hooks -- --apply
-npm run setup:launchd -- --apply
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.scan.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.backup.plist
+npm run setup:launchd -- --apply            # writes the two plists
+npm run launchd:load                        # shows the launchctl bootstrap commands
+npm run launchd:load -- --apply             # loads the 15-minute scan and the weekly backup
 ```
 
 - **Claude Code:** `Stop` and `SubagentStop` run `ingest` (async), and `SessionStart` runs `scan --changed-since-last`. Your other hooks are kept.
-- **Codex:** open Codex, run `/hooks`, then review and trust the three new hooks. Before relying on them, probe the real payload once in an isolated home:
+- **Codex:** open Codex, run `/hooks`, then review and trust the three new hooks (manual: trust is your decision). Before relying on them, record the real payload once in an isolated home under `./tmp` (your `~/.codex` is not touched):
   ```sh
-  mkdir -p /tmp/codex-probe && cp ~/.codex/config.toml /tmp/codex-probe/ 2>/dev/null
-  cat > /tmp/codex-probe/hooks.json <<'JSON'
-  {"hooks":{"Stop":[{"hooks":[{"type":"command","command":"cat >> /tmp/codex-probe/payload.jsonl"}]}]}}
-  JSON
-  CODEX_HOME=/tmp/codex-probe codex exec "say hi"; cat /tmp/codex-probe/payload.jsonl
+  npm run check:codex-hooks                   # prepares tmp/codex-probe and prints the manual trust step
+  CODEX_HOME="$PWD/tmp/codex-probe" codex     # run /hooks, trust the probe hooks, quit
+  npm run check:codex-hooks -- --run          # one codex exec (one model call); prints each payload's field names and types
   ```
   Check that `session_id`, `transcript_path`, `turn_id` and `last_assistant_message` are present (or note which are null).
 - **Capture,** in a real interactive session. One-shot `claude -p` and `codex exec` runs cancel unfinished async hooks at exit, so they can't prove capture.
@@ -114,7 +112,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-history.backup
 - **Recovery:** kill a session mid-turn, exit right after a turn, and run one turn with Postgres.app stopped (then start it again). Within 15 minutes of the server coming back, `npm run doctor` exits 0 and all three turns are in the database.
 - **launchd permissions:** after the scan job's first run, `~/.agent-history/com.agent-history.scan.err.log` should be empty, and `npm run doctor` should show no `log_after_last_ingest` warning. If Postgres.app denied the connection, open Postgres.app → Settings → App Permissions and allow the recorded node.
 - **Overhead:** no tool here measures the foreground dispatch/return cost of the installed async hook, because neither agent exposes those timings. The 50 ms acceptance check therefore stays open. Run `npm run check:overhead -- <some transcript.jsonl> 10` for unbudgeted diagnostics: shell spawn (~5 ms here) and background worker latency (~90 ms here). Adding `--dispatch` measures answer-to-probe-start (10 model calls); `--e2e` adds hooks on/off `claude -p` medians (20 model calls). If hooks ever feel slow, compare an interactive session with and without them (`claude --settings` with `{"disableAllHooks": true}`).
-- **Undo:** run the `cp …` restore commands printed by `backup:agent-config` (or restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`). Run `launchctl bootout gui/$(id -u)/com.agent-history.scan` (and `.backup`), then delete the two plists.
+- **Undo:** run the `cp …` restore commands printed by `backup:agent-config` (or restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`). Run `npm run launchd:unload -- --apply`, then delete the two plists in `~/Library/LaunchAgents`.
 
 ## 5. Tell the agents where history lives
 
@@ -130,12 +128,13 @@ npm run setup:pointer -- --apply           # inserted between markers; rerun to 
 ## 6. Retrospective skill
 
 ```sh
-ln -s "$PWD/skills/retrospective" ~/.claude/skills/retrospective
+npm run skill:install                       # shows the symlink it would create
+npm run skill:install -- --apply
 ```
 
 - Run it in a fresh session: "run a retrospective of <project> for the last 30 days".
 - Check by hand that every decision and reversal is backed by the quoted text in the cited session, and that later reversals supersede earlier decisions.
-- Undo: `rm ~/.claude/skills/retrospective`.
+- Undo: `npm run skill:uninstall -- --apply` (removes the link only if it points to this repository's skill).
 
 ## 7. Backups and Postgres.app upgrades
 
@@ -165,6 +164,9 @@ ln -s "$PWD/skills/retrospective" ~/.claude/skills/retrospective
 | --- | --- |
 | `npm run init` / `doctor` / `scan` / `scan:changed` / `scan:dry` / `export` / `backup` / `restore -- <dump> --to <db>` | the CLI command of the same name |
 | `npm run setup:<target>` (`cleanup-period`, `mirror`, `database`, `roles`, `hooks`, `launchd`, `export`, `pointer`) | `setup <target>`, dry run; add `-- --apply` |
+| `npm run launchd:load` / `launchd:unload` | `launchctl bootstrap` / `bootout` for both jobs; dry run, add `-- --apply` |
+| `npm run skill:install` / `skill:uninstall` | retrospective skill symlink in `~/.claude/skills`; dry run, add `-- --apply` |
+| `npm run check:codex-hooks [-- --run]` | Codex hook payload probe in `tmp/codex-probe` (trust step stays manual) |
 | `npm run backup:agent-config` | snapshot of agent settings, hooks, CLAUDE.md/AGENTS.md and plists into `~/.agent-history/config-backups/` |
 | `npm run psql [-- [--db NAME] args]` / `psql:reader [-- args]` | Postgres.app `psql` on the resolved endpoint, as owner / read-only role; `--db` swaps only the database name |
 | `npm run check:capture:claude` / `check:capture:codex` / `check:overhead` / `check:redaction` / `check:doctor` | live checks and diagnostics |

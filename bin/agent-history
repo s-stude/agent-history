@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 import { loadDotenv } from '../src/dotenv.js';
 
-loadDotenv();
+const command = process.argv.slice(2).find((a) => !a.startsWith('-'));
+try {
+  loadDotenv();
+} catch (err) {
+  const code = err.code || err.name || 'Error';
+  if (command === 'ingest') {
+    const { logLine } = await import('../src/hook.js');
+    await logLine(['-', '-', `dotenv-${code}`]).catch(() => {});
+    process.exit(0);
+  }
+  console.error(`agent-history: cannot load .env (${code})`);
+  process.exit(1);
+}
 const { main } = await import('../src/cli.js');
 process.exitCode = await main();

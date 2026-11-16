@@ -163,3 +163,13 @@ test('a pending line without a timestamp is aged by the last checkpoint', async 
   await e.db('sources').update({ updated_at: new Date(Date.now() - 30 * 60_000) });
   assert.equal(await e.level('claude_partial'), 'fail');
 });
+
+test('the pending-record age uses the top-level timestamp, never a nested one', async () => {
+  const { lineTime } = await import('../src/doctor.js');
+  const line = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', content: '{"timestamp":"2020-01-01T00:00:00Z"}', timestamp: '2020-01-01T00:00:00Z' }] }, timestamp: '2026-11-16T10:00:00Z' });
+  assert.equal(lineTime(line), Date.parse('2026-11-16T10:00:00Z'));
+  assert.equal(lineTime('{"type":"attachment"}'), null);
+  assert.equal(lineTime('{"timestamp": 5}'), null);
+  assert.equal(lineTime('not json "timestamp":"2026-01-01T00:00:00Z"'), null);
+  assert.equal(lineTime('[{"timestamp":"2026-01-01T00:00:00Z"}]'), null);
+});

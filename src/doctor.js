@@ -37,8 +37,14 @@ export async function firstPendingLine(file, offset) {
 }
 
 export function lineTime(line) {
-  const m = /"timestamp"\s*:\s*"([^"]+)"/.exec(line.slice(0, 4096));
-  const t = m ? Date.parse(m[1]) : NaN;
+  let record;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const value = record && typeof record === 'object' && !Array.isArray(record) ? record.timestamp : undefined;
+  const t = typeof value === 'string' ? Date.parse(value) : NaN;
   return Number.isNaN(t) ? null : t;
 }
 

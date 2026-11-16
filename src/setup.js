@@ -331,6 +331,7 @@ export async function snapshotAgentConfig({ home, env = process.env, now = new D
   const manifest = [];
   for (const [name, original] of targets) {
     if ((await readText(original)) === null) {
+      manifest.push({ copy: null, original, absent: true });
       log(`absent\t${original}`);
       continue;
     }
@@ -342,6 +343,9 @@ export async function snapshotAgentConfig({ home, env = process.env, now = new D
   }
   await writeFile(path.join(dir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
   log(`snapshot\t${dir}`);
-  for (const { copy, original } of manifest) log(`restore with: cp ${shellQuote(copy)} ${shellQuote(original)}`);
+  for (const { copy, original, absent } of manifest) {
+    if (absent) log(`did not exist: if setup created it later, review it, then remove with: rm ${shellQuote(original)}`);
+    else log(`restore with: cp ${shellQuote(copy)} ${shellQuote(original)}`);
+  }
   return { dir, manifest };
 }

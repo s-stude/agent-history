@@ -31,7 +31,7 @@ Before anything changes, keep a copy of everything setup can touch: `~/.claude/s
 npm run backup:agent-config
 ```
 
-It writes them to `~/.agent-history/config-backups/<timestamp>/` (folder 0700, files 0600) with a `manifest.json`, and prints a `cp …` restore command per file. Each run makes a new folder; nothing is overwritten. On top of this, every `setup … -- --apply` also saves the previous version of a file it changes as `<file>.bak-<timestamp>` next to it.
+It writes them to `~/.agent-history/config-backups/<timestamp>/` (folder 0700, files 0600) with a `manifest.json`, and prints a `cp …` restore command per existing file. Files that did not exist yet are recorded as absent, with an `rm …` line: if setup creates them later (for example `~/.codex/hooks.json` on a first install), undo means reviewing that file and removing it. Each run makes a new folder; nothing is overwritten. On top of this, every `setup … -- --apply` also saves the previous version of a file it changes as `<file>.bak-<timestamp>` next to it.
 
 ## 1. Stop Claude Code from deleting old transcripts — do this first
 
@@ -112,7 +112,7 @@ npm run launchd:load -- --apply             # loads the 15-minute scan and the w
 - **Recovery:** kill a session mid-turn, exit right after a turn, and run one turn with Postgres.app stopped (then start it again). Within 15 minutes of the server coming back, `npm run doctor` exits 0 and all three turns are in the database.
 - **launchd permissions:** after the scan job's first run, `~/.agent-history/com.agent-history.scan.err.log` should be empty, and `npm run doctor` should show no `log_after_last_ingest` warning. If Postgres.app denied the connection, open Postgres.app → Settings → App Permissions and allow the recorded node.
 - **Overhead:** no tool here measures the foreground dispatch/return cost of the installed async hook, because neither agent exposes those timings. The 50 ms acceptance check therefore stays open. Run `npm run check:overhead -- <some transcript.jsonl> 10` for unbudgeted diagnostics: shell spawn (~5 ms here) and background worker latency (~90 ms here). Adding `--dispatch` measures answer-to-probe-start (10 model calls); `--e2e` adds hooks on/off `claude -p` medians (20 model calls). If hooks ever feel slow, compare an interactive session with and without them (`claude --settings` with `{"disableAllHooks": true}`).
-- **Undo:** run the `cp …` restore commands printed by `backup:agent-config` (or restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`). Run `npm run launchd:unload -- --apply`, then delete the two plists in `~/Library/LaunchAgents`.
+- **Undo:** run the `cp …` restore commands printed by `backup:agent-config`, and for files it listed as absent (often `~/.codex/hooks.json`), review and remove them with the printed `rm …` (or restore the `.bak-` files of `~/.claude/settings.json` and `~/.codex/hooks.json`). Run `npm run launchd:unload -- --apply`, then delete the two plists in `~/Library/LaunchAgents`.
 
 ## 5. Tell the agents where history lives
 

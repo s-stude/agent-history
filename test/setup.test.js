@@ -263,10 +263,28 @@ test('snapshot-config copies existing agent config privately and never overwrite
   await writeFile(L.claudeSettings, '{"changed":true}');
   const b = await snapshotAgentConfig({ home: h, now, log: () => {} });
   assert.notEqual(a.dir, b.dir);
-  assert.deepEqual(a.manifest.map((m) => m.original).sort(), [L.claudeMd, L.claudeSettings].sort());
+  assert.deepEqual(a.manifest.filter((m) => !m.absent).map((m) => m.original).sort(), [L.claudeMd, L.claudeSettings].sort());
+  assert.ok(a.manifest.some((m) => m.absent && m.original === L.codexHooks));
   const first = a.manifest.find((m) => m.original === L.claudeSettings).copy;
   assert.match(await readFile(first, 'utf8'), /"theme":"dark"/);
   assert.equal((await stat(first)).mode & 0o777, 0o600);
   assert.equal((await stat(a.dir)).mode & 0o777, 0o700);
-  assert.equal(JSON.parse(await readFile(path.join(b.dir, 'manifest.json'), 'utf8')).length, 2);
+  assert.equal(JSON.parse(await readFile(path.join(b.dir, 'manifest.json'), 'utf8')).filter((m) => !m.absent).length, 2);
+});
+
+test('replaying a snapshot manifest undoes a first hooks install, including newly created files', async (t) => {
+  const { h, L, opts } = await home(t);
+  const { snapshotAgentConfig } = await import('../src/setup.js');
+  const { copyFile, rm, access } = await import('node:fs/promises');
+  const before = await readFile(L.claudeSettings, 'utf8');
+  const snap = await snapshotAgentConfig({ home: h, log: () => {} });
+  await setup('hooks', { ...opts, apply: true });
+  assert.match(await readFile(L.codexHooks, 'utf8'), /agent-history:managed/);
+  const manifest = JSON.parse(await readFile(path.join(snap.dir, 'manifest.json'), 'utf8'));
+  for (const m of manifest) {
+    if (m.absent) await rm(m.original, { force: true });
+    else await copyFile(m.copy, m.original);
+  }
+  assert.equal(await readFile(L.claudeSettings, 'utf8'), before);
+  await assert.rejects(access(L.codexHooks));
 });

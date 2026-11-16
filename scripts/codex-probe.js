@@ -19,24 +19,58 @@ export async function prepare(dir = PROBE_HOME, realCodex = process.env.CODEX_HO
   return { dir, out };
 }
 
+export function summarize(text) {
+  const lines = [];
+  for (const line of text.split('\n').filter(Boolean)) {
+    try {
+      const p = JSON.parse(line);
+      lines.push(`${p.hook_event_name ?? '?'}: ${Object.entries(p).map(([k, v]) => `${k}=${v === null ? 'null' : typeof v}`).join(', ')}`);
+    } catch {
+      lines.push('unparsable payload line');
+    }
+  }
+  return lines;
+}
+
+export async function runProbe({ dir = PROBE_HOME, spawnFn = spawn, log = console.log } = {}) {
+  const { out } = await prepare(dir);
+  await writeFile(out, '', { mode: 0o600 });
+  const code = await new Promise((resolve) => {
+    let child;
+    try {
+      child = spawnFn('codex', ['exec', 'Reply with OK'], { stdio: 'inherit', env: { ...process.env, CODEX_HOME: dir } });
+    } catch {
+      resolve(127);
+      return;
+    }
+    child.on('error', () => resolve(127));
+    child.on('close', (c) => resolve(c ?? 1));
+  });
+  const text = await readFile(out, 'utf8').catch(() => '');
+  if (code !== 0) {
+    log(`FAIL: codex exec exited ${code}`);
+    return code || 1;
+  }
+  const lines = summarize(text);
+  if (!lines.length) {
+    log('FAIL: no payload recorded in this run; were the probe hooks trusted via /hooks?');
+    return 1;
+  }
+  for (const l of lines) log(l);
+  return 0;
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { dir, out } = await prepare();
-  if (process.argv[2] !== '--run') {
+  const args = process.argv.slice(2);
+  if (args.length > 1 || (args.length === 1 && args[0] !== '--run')) {
+    console.error('usage: codex-probe.js [--run]');
+    process.exitCode = 2;
+  } else if (args[0] === '--run') {
+    process.exitCode = await runProbe();
+  } else {
+    const { dir } = await prepare();
     console.log(`Prepared ${dir}. Manual step (hook trust stays yours):`);
     console.log(`  CODEX_HOME='${dir}' codex      # then run /hooks, review and trust the probe hooks, and quit`);
     console.log('Then: npm run check:codex-hooks -- --run');
-  } else {
-    const child = spawn('codex', ['exec', 'Reply with OK'], { stdio: 'inherit', env: { ...process.env, CODEX_HOME: dir } });
-    await new Promise((r) => child.on('close', r));
-    const text = await readFile(out, 'utf8').catch(() => '');
-    if (!text.trim()) console.log('No payload recorded: were the probe hooks trusted via /hooks?');
-    for (const line of text.split('\n').filter(Boolean)) {
-      try {
-        const p = JSON.parse(line);
-        console.log(`${p.hook_event_name ?? '?'}: ${Object.entries(p).map(([k, v]) => `${k}=${v === null ? 'null' : typeof v}`).join(', ')}`);
-      } catch {
-        console.log('unparsable payload line');
-      }
-    }
   }
 }

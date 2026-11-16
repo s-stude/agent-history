@@ -65,3 +65,63 @@ test('the Codex probe home records payloads without touching the real ~/.codex',
   await new Promise((r) => child.on('close', r));
   assert.equal(JSON.parse((await readFile(out, 'utf8')).trim()).turn_id, 't1');
 });
+
+const { apply, main } = await import('../scripts/install.js');
+const { runProbe } = await import('../scripts/codex-probe.js');
+const { EventEmitter } = await import('node:events');
+
+test('unload treats only a not-loaded job as success', async () => {
+  const step = { cmd: 'launchctl', args: ['bootout', 'gui/501/com.agent-history.scan'], tolerate: true };
+  const notLoaded = async () => { throw Object.assign(new Error('x'), { code: 3, stderr: 'Boot-out failed: 3: No such process' }); };
+  await apply(step, { exec: notLoaded });
+  const denied = async () => { throw Object.assign(new Error('x'), { code: 1, stderr: 'Boot-out failed: 1: Operation not permitted' }); };
+  await assert.rejects(apply(step, { exec: denied }));
+  const logs = [];
+  const errors = [];
+  const code = await main(['launchd:unload', '--apply'], { exec: denied, log: (l) => logs.push(l), error: (l) => errors.push(l) });
+  assert.equal(code, 1);
+  assert.equal(logs.length, 0, 'nothing reported as ran');
+});
+
+test('unknown flags or extra arguments are rejected before any action', async () => {
+  for (const argv of [['skill:install', '--apply', '--home', '/isolated'], ['skill:install', 'extra'], ['launchd:load', '--aply'], ['nope'], []]) {
+    let calls = 0;
+    const errors = [];
+    const code = await main(argv, { exec: async () => { calls++; }, log: () => { calls++; }, error: (l) => errors.push(l) });
+    assert.equal(code, 2, argv.join(' '));
+    assert.equal(calls, 0, argv.join(' '));
+  }
+});
+
+function fakeSpawn({ code = 0, payload = null, out }) {
+  return () => {
+    const child = new EventEmitter();
+    setImmediate(async () => {
+      if (payload) await (await import('node:fs/promises')).appendFile(out(), `${payload}\n`);
+      child.emit('close', code);
+    });
+    return child;
+  };
+}
+
+test('the probe reports only this run, and fails on a failed or empty run', async (t) => {
+  const dir = await tmpDir(t);
+  const probe = path.join(dir, 'probe');
+  const out = () => path.join(probe, 'payload.jsonl');
+  const { writeFile: wf, mkdir: md } = await import('node:fs/promises');
+  await md(probe, { recursive: true });
+  const stale = '{"hook_event_name":"Stop","old":"x"}';
+  const quiet = () => {};
+
+  await wf(out(), `${stale}\n`);
+  assert.equal(await runProbe({ dir: probe, spawnFn: fakeSpawn({ code: 9, out }), log: quiet }), 9);
+
+  await wf(out(), `${stale}\n`);
+  assert.equal(await runProbe({ dir: probe, spawnFn: fakeSpawn({ code: 0, out }), log: quiet }), 1);
+
+  await wf(out(), `${stale}\n`);
+  const lines = [];
+  const ok = await runProbe({ dir: probe, spawnFn: fakeSpawn({ code: 0, payload: '{"hook_event_name":"Stop","turn_id":"t9"}', out }), log: (l) => lines.push(l) });
+  assert.equal(ok, 0);
+  assert.deepEqual(lines, ['Stop: hook_event_name=string, turn_id=string']);
+});

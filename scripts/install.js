@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { lstat, mkdir, readlink, rm, symlink } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { loadDotenv } from '../src/dotenv.js';
 import { BACKUP_LABEL, SCAN_LABEL, layout } from '../src/setup.js';
 import { shellQuote } from '../src/shell.js';
@@ -39,12 +39,14 @@ function describe(step) {
   return `rm ${shellQuote(step.unlink)}   # only if it is the symlink to ${step.expected}`;
 }
 
-async function apply(step) {
+const NOT_LOADED = /No such process|Could not find service|not loaded/i;
+
+export async function apply(step, { exec = run } = {}) {
   if (step.cmd) {
     try {
-      await run(step.cmd, step.args);
+      await exec(step.cmd, step.args);
     } catch (err) {
-      if (!step.tolerate) throw err;
+      if (!(step.tolerate && (NOT_LOADED.test(String(err.stderr ?? '')) || err.code === 3))) throw err;
     }
   } else if (step.link) {
     await mkdir(path.dirname(step.link), { recursive: true });
@@ -59,18 +61,38 @@ async function apply(step) {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const [action, flag] = process.argv.slice(2);
-  const doApply = flag === '--apply';
-  try {
-    for (const step of plan(action)) {
-      if (doApply) {
-        await apply(step);
-        console.log(`ran\t${describe(step)}`);
-      } else console.log(`would run\t${describe(step)}`);
-    }
-  } catch (err) {
-    console.error(`install ${action}: ${err.message}`);
-    process.exitCode = 1;
+export const ACTIONS = ['launchd:load', 'launchd:unload', 'skill:install', 'skill:uninstall'];
+
+export function parseCommand(argv) {
+  const { values, positionals } = parseArgs({ args: argv, options: { apply: { type: 'boolean' } }, allowPositionals: true, strict: true });
+  if (positionals.length !== 1 || !ACTIONS.includes(positionals[0])) {
+    throw new Error(`usage: install.js ${ACTIONS.join('|')} [--apply]`);
   }
+  return { action: positionals[0], apply: Boolean(values.apply) };
+}
+
+export async function main(argv, { exec = run, log = console.log, error = console.error, env = process.env } = {}) {
+  let cmd;
+  try {
+    cmd = parseCommand(argv);
+  } catch (err) {
+    error(`install: ${err.message}`);
+    return 2;
+  }
+  try {
+    for (const step of plan(cmd.action, { env })) {
+      if (cmd.apply) {
+        await apply(step, { exec });
+        log(`ran\t${describe(step)}`);
+      } else log(`would run\t${describe(step)}`);
+    }
+    return 0;
+  } catch (err) {
+    error(`install ${cmd.action}: ${err.message}`);
+    return 1;
+  }
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  process.exitCode = await main(process.argv.slice(2));
 }

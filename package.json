@@ -46,5 +46,8 @@
   "dependencies": {
     "knex": "3.3.0",
     "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "smol-toml": "1.9.1"
   }
 }

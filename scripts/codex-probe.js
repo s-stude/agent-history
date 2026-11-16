@@ -6,18 +6,14 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 
 export const PROBE_HOME = fileURLToPath(new URL('../tmp/codex-probe', import.meta.url));
 
-export function stripHookTables(toml) {
-  const out = [];
-  let skipping = false;
-  for (const line of toml.split('\n')) {
-    const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/.exec(line);
-    if (header) skipping = /^"?hooks"?(\.|$)/.test(header[1]);
-    if (!skipping) out.push(line);
-  }
-  return out.join('\n');
+export function stripHookTables(text) {
+  const config = parseToml(text);
+  delete config.hooks;
+  return stringifyToml(config);
 }
 
 async function exists(file) {

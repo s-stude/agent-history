@@ -158,3 +158,22 @@ test('the probe refuses to run before it was prepared', async (t) => {
   assert.equal(await runProbe({ dir: path.join(dir, 'never'), spawnFn: () => { throw new Error('must not spawn'); }, log: (l) => lines.push(l) }), 1);
   assert.match(lines[0], /not prepared/);
 });
+
+test('hook stripping is TOML-aware: quoted and spaced keys, multiline strings', async () => {
+  const { stripHookTables } = await import('../scripts/codex-probe.js');
+  const { parse } = await import('smol-toml');
+  const cases = [
+    `model = "x"\n[['hooks'.Stop]]\n[['hooks'.Stop.hooks]]\ncommand = "real"\n`,
+    `model = "x"\n[[hooks . Stop]]\n[[hooks . Stop . hooks]]\ncommand = "real"\n`,
+    `developer_instructions = """\n[hooks]\nDo not alter these settings.\n"""\nmodel = "x"\n[hooks.state."/a:stop:0:0"]\ntrusted = true\n[projects."/p"]\ntrust_level = "trusted"\n`,
+  ];
+  for (const input of cases) {
+    const out = parse(stripHookTables(input));
+    assert.equal(out.hooks, undefined, input);
+    assert.equal(out.model, 'x', input);
+  }
+  const kept = parse(stripHookTables(cases[2]));
+  assert.equal(kept.developer_instructions, '[hooks]\nDo not alter these settings.\n');
+  assert.equal(kept.projects['/p'].trust_level, 'trusted');
+  assert.throws(() => stripHookTables('not = [valid'), 'invalid TOML is reported, not half-copied');
+});

@@ -58,7 +58,7 @@ npm run setup:mirror -- --apply
 ```sh
 npm run setup:database                     # prints the SQL
 npm run setup:database -- --apply          # creates agent_history, migrates, creates agent_history_reader, writes config.json
-npm run doctor                             # expect "ok schema current" and "ok reader_role ok"
+npm run doctor                             # expect "ok schema current" and "ok reader_role ok"; "fail claude_missing/codex_missing" is expected until step 3
 ```
 
 - Check that the reader can read but not write:
@@ -78,7 +78,7 @@ npm run psql -- -c 'ANALYZE'
 npm run doctor
 ```
 
-- Expect, from the trial on a throwaway database (Nov 16): about 3–4 minutes, ~860 MB database, 0 errors. `doctor` should show no `fail` lines.
+- Expect, from the trial on a throwaway database (Nov 16): about 3–4 minutes, ~860 MB database, 0 errors. `doctor` should show no `fail` lines, except `*_partial` for sessions that are still open and growing (like the one you ran the scan from); `npm run scan:changed` clears them, and after step 4 the hooks keep them current.
 - Re-running is safe: finished sources are skipped. `npm run scan:changed` is the fast catch-up.
 - Undo: drop and recreate the database (step 2).
 

@@ -80,7 +80,7 @@ Markdown copies: ~/.agent-history/md/<project>/
 | Transcript lag or missing file at capture time | Lost or stale last turn | Use `last_assistant_message`; re-scan unfinished sessions at the next SessionStart |
 | Database bloat from tool output | Slow search, large database | Trim tool output, store file paths not contents; autovacuum; watch size in `doctor` |
 | Postgres.app not running, or upgraded to a new major version | Hooks fail; a new major version starts with an empty data dir | Hooks fail open and log; recovery scan catches up once the server is back; regular `pg_dump` backups; `doctor` checks server version and DB presence |
-| Postgres.app permission dialog blocks a headless client | launchd scan or hook is denied with no one to click Allow | Run every client through one pinned absolute `node` path that is already allowed; `doctor` and the recovery scan surface connection denials |
+| Postgres.app permission dialog blocks a headless client | launchd scan or hook is denied with no one to click Allow | Run every client through one pinned absolute `node` path that has been allowed; `doctor` and the recovery scan surface connection denials |
 | Weak recall on vague asks ("that auth thing") | Agent misses the right session | Date and project filters first; the agent retries with synonyms; add a short per-session summary later |
 | Stale decisions resurfacing | Agent repeats a choice that was reversed | Always show dates; newer sessions win; retros list reversals |
 | Transcript format changes between tool versions | Ingest breaks silently | Keep the raw JSONL line in a column; log parse errors; pin a parser version |

@@ -5,8 +5,8 @@ Everything below changes things outside the repository, so it is yours to run. E
 ## 0. Prepare
 
 ```sh
-cd <path to this repository>
-nvm use 22.22.0          # the node that runs setup is recorded for hooks and launchd (already allowed in Postgres.app)
+cd '/path/to/this/repository'      # substitute where you cloned it
+nvm use 22.22.0          # the node that runs setup is recorded for hooks and launchd; allow it once in Postgres.app
 npm ci
 cp .env.example .env     # then edit if you need a non-default endpoint, history home or transcript roots
 ```

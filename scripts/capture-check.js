@@ -7,6 +7,9 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { answerTime, claudeTranscript, codexRollout, findFinalRow, readerQuery, waitForCapture } from '../src/capture.js';
 import { rootsFromEnv } from '../src/inventory.js';
+import { loadDotenv } from '../src/dotenv.js';
+
+loadDotenv();
 
 const tool = process.argv[2];
 if (!['claude', 'codex'].includes(tool)) {

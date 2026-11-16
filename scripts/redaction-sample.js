@@ -1,6 +1,9 @@
 import { createInterface } from 'node:readline';
 import { buildInventory, openSource, rootsFromEnv } from '../src/inventory.js';
 import { sanitizeLine } from '../src/redact.js';
+import { loadDotenv } from '../src/dotenv.js';
+
+loadDotenv();
 
 const sampleSize = Number(process.argv[2] || 50);
 const LABEL = /\[REDACTED:(\w+)\]/g;

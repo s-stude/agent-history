@@ -11,8 +11,31 @@
     "agent-history": "bin/agent-history"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 'test/**/*.test.js'",
-    "check:doctor": "node scripts/check-doctor.js"
+    "test": "AGENT_HISTORY_DOTENV=0 node --test --test-concurrency=1 'test/**/*.test.js'",
+    "check:doctor": "AGENT_HISTORY_DOTENV=0 node scripts/check-doctor.js",
+    "ah": "node --max-old-space-size=192 bin/agent-history",
+    "init": "node --max-old-space-size=192 bin/agent-history init",
+    "doctor": "node --max-old-space-size=192 bin/agent-history doctor",
+    "scan": "node --max-old-space-size=192 bin/agent-history scan",
+    "scan:changed": "node --max-old-space-size=192 bin/agent-history scan --changed-since-last",
+    "scan:dry": "node --max-old-space-size=192 bin/agent-history scan --dry-run",
+    "export": "node --max-old-space-size=192 bin/agent-history export",
+    "backup": "node --max-old-space-size=192 bin/agent-history backup",
+    "restore": "node --max-old-space-size=192 bin/agent-history restore",
+    "setup:cleanup-period": "node --max-old-space-size=192 bin/agent-history setup cleanup-period",
+    "setup:mirror": "node --max-old-space-size=192 bin/agent-history setup mirror",
+    "setup:database": "node --max-old-space-size=192 bin/agent-history setup database",
+    "setup:roles": "node --max-old-space-size=192 bin/agent-history setup database --roles-only",
+    "setup:hooks": "node --max-old-space-size=192 bin/agent-history setup hooks",
+    "setup:launchd": "node --max-old-space-size=192 bin/agent-history setup launchd",
+    "setup:export": "node --max-old-space-size=192 bin/agent-history setup export",
+    "setup:pointer": "node --max-old-space-size=192 bin/agent-history setup pointer",
+    "check:capture:claude": "node scripts/capture-check.js claude",
+    "check:capture:codex": "node scripts/capture-check.js codex",
+    "check:overhead": "scripts/overhead.sh",
+    "check:redaction": "node scripts/redaction-sample.js",
+    "psql": "node scripts/psql.js",
+    "psql:reader": "node scripts/psql.js --reader"
   },
   "dependencies": {
     "knex": "3.3.0",

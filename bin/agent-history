@@ -1,4 +1,6 @@
 #!/usr/bin/env node
-import { main } from '../src/cli.js';
+import { loadDotenv } from '../src/dotenv.js';
 
+loadDotenv();
+const { main } = await import('../src/cli.js');
 process.exitCode = await main();

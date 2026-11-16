@@ -10,8 +10,11 @@ Requires Node.js 22.15+ and a running PostgreSQL server (Postgres.app 18 on `loc
 
 ```bash
 npm ci
+cp .env.example .env   # optional: endpoint, history home, transcript roots
 npm test
 ```
+
+Every operation is an npm script (`npm run doctor`, `npm run scan`, `npm run setup:hooks -- --apply`, …); the full list is at the end of [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 `.npmrc` pins the npm cache to `tmp/npm-cache` (resolved from the current directory, so run npm from the repo root). Tests create and drop their own `agent_history_test_*` databases and never touch `agent_history`.
 
@@ -30,6 +33,8 @@ npm test
 Turning it on for real is a sequence of user steps: see [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Configuration
+
+Settings resolve as shell environment > `.env` in the repository (git-ignored, see `.env.example`) > `~/.agent-history/config.json` (written by `setup`) > defaults. Hooks and launchd jobs run this CLI, so they read the same `.env`. `npm test` ignores `.env`.
 
 - `AGENT_HISTORY_DATABASE_URL`: database endpoint; else `url` in `~/.agent-history/config.json` (written by `setup`); else `postgresql://localhost:5432/agent_history`. Passwords belong in `~/.pgpass`, not in the URL or config.
 - `AGENT_HISTORY_HOME`: logs, config, exports and backups, default `~/.agent-history`.

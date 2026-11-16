@@ -5,3 +5,4 @@ tests/private/
 test/private/
 *.dump
 .idea/
+.env

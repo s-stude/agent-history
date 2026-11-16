@@ -130,7 +130,7 @@ test('row key is unique per session, record and block', async (t) => {
 });
 
 test('reader role SQL grants only SELECT and a read-only default', () => {
-  const sql = readerRoleSql({ database: 'agent_history', owner: 'ahalilov' });
+  const sql = readerRoleSql({ database: 'agent_history', owner: 'owner_role' });
   const joined = sql.join(';\n');
   assert.match(joined, /CREATE ROLE "agent_history_reader" LOGIN/);
   assert.match(joined, /SET default_transaction_read_only = on/);

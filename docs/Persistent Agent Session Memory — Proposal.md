@@ -1,6 +1,6 @@
 # Persistent Agent Session Memory — Proposal
 
-Nov 16, 2026 · @Akim @gmail
+Nov 16, 2026
 
 ## Summary
 

@@ -45,6 +45,6 @@ Settings resolve as shell environment > `.env` in the repository (git-ignored, s
 
 Hooks and launchd jobs call the CLI by absolute path, never through `PATH`, as `"<node>" --max-old-space-size=192 "<repo>/bin/agent-history" …`:
 
-- node: `/Users/ahalilov/.nvm/versions/node/v22.22.0/bin/node` (already allowed in Postgres.app's permission dialog)
-- CLI: `/Users/ahalilov/Documents/projects/harness-sessions-postgres/bin/agent-history`
+- node: the absolute path of the node that ran `setup` (for example `~/.nvm/versions/node/v22.22.0/bin/node`); allow it once in Postgres.app's permission dialog
+- CLI: `<repo>/bin/agent-history`
 - Postgres.app client tools: `/Applications/Postgres 18.app/Contents/Versions/latest/bin` (the `psql` on `PATH` is Homebrew 16)

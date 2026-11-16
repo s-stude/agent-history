@@ -1,12 +1,15 @@
 // Records the real Codex hook payload in an isolated CODEX_HOME under ./tmp, without touching ~/.codex.
 //   npm run check:codex-hooks              prepare: writes tmp/codex-probe/{config.toml,hooks.json} and prints next steps
 //   npm run check:codex-hooks -- --run     after you trusted the probe hook: one `codex exec` (spends a model call), prints payloads
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+
+const run = promisify(execFile);
 
 export const PROBE_HOME = fileURLToPath(new URL('../tmp/codex-probe', import.meta.url));
 
@@ -35,6 +38,15 @@ export async function prepare(dir = PROBE_HOME, realCodex = process.env.CODEX_HO
   const content = `${JSON.stringify(hooks, null, 2)}\n`;
   if ((await readFile(hooksFile, 'utf8').catch(() => null)) !== content) await writeFile(hooksFile, content, { mode: 0o600 });
   return { dir, out };
+}
+
+export async function staleDaemons(dir = PROBE_HOME, exec = run) {
+  try {
+    const { stdout } = await exec('pgrep', ['-f', `${dir}/packages/app-server-daemon`]);
+    return stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 export function summarize(text) {
@@ -98,10 +110,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } else if (args[0] === '--run') {
     process.exitCode = await runProbe();
   } else {
+    const daemons = await staleDaemons();
+    if (daemons.length) {
+      console.log(`A Codex app-server from an earlier probe is still running for this folder (pid ${daemons.join(', ')}). Stop it first: kill ${daemons.join(' ')}`);
+    }
     const { dir } = await prepare();
     console.log(`Prepared ${dir} (your config.toml copied once without its [hooks] tables; delete the folder to start over).`);
     console.log('Manual step (hook trust stays yours):');
-    console.log(`  CODEX_HOME='${dir}' codex      # then run /hooks, review and trust the probe hooks, and quit`);
+    console.log(`  CODEX_HOME='${dir}' codex --no-daemon      # then run /hooks, review and trust the probe hooks, and quit`);
     console.log('Then: npm run check:codex-hooks -- --run');
   }
 }

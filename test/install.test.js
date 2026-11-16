@@ -177,3 +177,12 @@ test('hook stripping is TOML-aware: quoted and spaced keys, multiline strings', 
   assert.equal(kept.projects['/p'].trust_level, 'trusted');
   assert.throws(() => stripHookTables('not = [valid'), 'invalid TOML is reported, not half-copied');
 });
+
+test('stale probe daemons are detected by their path under the probe home', async () => {
+  const { staleDaemons } = await import('../scripts/codex-probe.js');
+  let asked;
+  const found = await staleDaemons('/x/probe', async (cmd, args) => { asked = [cmd, ...args]; return { stdout: '86244\n' }; });
+  assert.deepEqual(asked, ['pgrep', '-f', '/x/probe/packages/app-server-daemon']);
+  assert.deepEqual(found, ['86244']);
+  assert.deepEqual(await staleDaemons('/x/probe', async () => { throw Object.assign(new Error('none'), { code: 1 }); }), []);
+});

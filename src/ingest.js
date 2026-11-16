@@ -374,6 +374,9 @@ async function ingestOnce(db, source, { batchLines = BATCH_LINES, batchBytes = B
     total.lines++;
     if (count >= batchLines || bytes >= batchBytes) await flush(false);
   }
+  if (total.lines === 0 && !ctx.reset && ctx.expectedGeneration !== null) {
+    return { skipped: true, lines: 0, rows: 0 };
+  }
   await flush(true);
   return { skipped: false, ...total };
 }

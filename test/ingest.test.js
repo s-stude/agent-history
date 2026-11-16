@@ -448,3 +448,22 @@ test('hook against a corrupted schema exits cleanly and records a private diagno
   assert.match(log, /\t42P01$/m);
   assert.ok(!log.includes('private answer text'));
 });
+
+test('a run that reads no complete line leaves the checkpoint untouched', async (t) => {
+  const e = await env(t);
+  if (!e) return;
+  await write(e.claudeFile, `${(await claudeLines()).join('\n')}\n`);
+  await ingestSource(e.db, await e.source(e.claudeFile));
+  const before = await checkpoint(e.db, e.claudeFile);
+  await new Promise((r) => setTimeout(r, 20));
+  await appendFile(e.claudeFile, '{"type":"user","uuid":"half');
+  const r = await ingestSource(e.db, await e.source(e.claudeFile));
+  assert.equal(r.skipped, true);
+  const after = await checkpoint(e.db, e.claudeFile);
+  assert.equal(String(after.generation), String(before.generation));
+  assert.equal(after.updated_at.getTime(), before.updated_at.getTime());
+  const fresh = path.join(e.roots.claudeProjects, '-w-demo', '43cec861-2203-414b-bfc7-b732d4b880aa.jsonl');
+  await write(fresh, '{"type":"user","uuid":"only-partial');
+  await ingestSource(e.db, await e.source(fresh));
+  assert.ok(await checkpoint(e.db, fresh), 'a new source still gets its first checkpoint row');
+});

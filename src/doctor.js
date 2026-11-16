@@ -10,15 +10,25 @@ export const PROVISIONAL_MAX_AGE_MIN = 10;
 export const BACKUP_MAX_AGE_DAYS = 8;
 export const CATCH_UP_GRACE_MIN = 20;
 
-async function hasCompleteLineAfter(file, offset) {
+const FIRST_LINE_LIMIT = 4 * 1024 * 1024;
+
+export async function firstPendingLine(file, offset) {
   const fh = await open(file, 'r');
   try {
+    const chunks = [];
+    let size = 0;
     const buf = Buffer.alloc(1 << 16);
     let pos = offset;
     for (;;) {
       const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
-      if (!bytesRead) return false;
-      if (buf.subarray(0, bytesRead).includes(0x0a)) return true;
+      if (!bytesRead) return null;
+      const nl = buf.subarray(0, bytesRead).indexOf(0x0a);
+      if (nl !== -1) {
+        if (size < FIRST_LINE_LIMIT) chunks.push(Buffer.from(buf.subarray(0, nl)));
+        return Buffer.concat(chunks).toString('utf8');
+      }
+      if (size < FIRST_LINE_LIMIT) chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
+      size += bytesRead;
       pos += bytesRead;
     }
   } finally {
@@ -26,9 +36,15 @@ async function hasCompleteLineAfter(file, offset) {
   }
 }
 
+export function lineTime(line) {
+  const m = /"timestamp"\s*:\s*"([^"]+)"/.exec(line.slice(0, 4096));
+  const t = m ? Date.parse(m[1]) : NaN;
+  return Number.isNaN(t) ? null : t;
+}
+
 async function sourceProblems(db, inv, now = new Date()) {
   const rows = new Map(
-    (await db('sources').select('path', 'status', 'byte_offset', 'inode', 'size', 'prefix_fingerprint', 'parser_version')).map((r) => [r.path, r]),
+    (await db('sources').select('path', 'status', 'byte_offset', 'inode', 'size', 'prefix_fingerprint', 'parser_version', 'updated_at')).map((r) => [r.path, r]),
   );
   const out = { missing: [], partial: [], stale: [], catching_up: [] };
   const graceStart = now.getTime() - CATCH_UP_GRACE_MIN * 60_000;
@@ -55,9 +71,13 @@ async function sourceProblems(db, inv, now = new Date()) {
       (await prefixFingerprint(s.path, Number(row.byte_offset))) !== row.prefix_fingerprint
     ) {
       out.stale.push(s);
-    } else if (info.size > Number(row.byte_offset) && (await hasCompleteLineAfter(s.path, Number(row.byte_offset)))) {
-      if (info.mtimeMs >= graceStart) out.catching_up.push(s);
-      else out.partial.push(s);
+    } else if (info.size > Number(row.byte_offset)) {
+      const pending = await firstPendingLine(s.path, Number(row.byte_offset));
+      if (pending !== null) {
+        const since = lineTime(pending) ?? new Date(row.updated_at).getTime();
+        if (since >= graceStart) out.catching_up.push(s);
+        else out.partial.push(s);
+      }
     }
   }
   return out;

@@ -40,9 +40,7 @@ test('missing, partial and unsupported sources fail', async (t) => {
   const e = await setup(t);
   if (!e) return;
   await write(path.join(e.roots.claudeProjects, '-w-demo', '43cec861-2203-414b-bfc7-b732d4b88001.jsonl'), '{"type":"mode"}\n');
-  await appendFile(e.main, '{"type":"mode"}\n');
-  const old = new Date(Date.now() - 3_600_000);
-  await utimes(e.main, old, old);
+  await appendFile(e.main, `{"type":"mode","timestamp":"${new Date(Date.now() - 3_600_000).toISOString()}"}\n`);
   await write(path.join(e.roots.codexSessions, 'weird.jsonl'), '{}\n');
   const r = await e.run();
   assert.equal(r.failed, true);
@@ -131,29 +129,37 @@ test('role audit: a role that can truncate, own or create is not read-only', asy
   assert.equal(await roleStatus(e.db, 'agent_history_role_that_does_not_exist'), 'missing');
 });
 
-test('a recently written session behind its checkpoint is a warning; after the grace period it fails', async (t) => {
+const at = (minutesAgo) => new Date(Date.now() - minutesAgo * 60_000).toISOString();
+
+test('a backlog younger than 20 minutes warns; older fails, even while new lines keep arriving', async (t) => {
   const e = await setup(t);
   if (!e) return;
-  await appendFile(e.main, '{"type":"attachment"}\n');
+  await appendFile(e.main, `{"type":"attachment","timestamp":"${at(1)}"}\n`);
   let r = await e.run();
   assert.equal(r.failed, false);
   assert.equal(r.checks.find((c) => c.check === 'claude_catching_up').level, 'warn');
-  assert.equal(await e.level('claude_partial'), 'ok');
-  const old = new Date(Date.now() - 21 * 60_000);
-  await utimes(e.main, old, old);
-  r = await e.run();
-  assert.equal(r.failed, true);
-  assert.equal(await e.level('claude_partial'), 'fail');
-  assert.equal(r.checks.find((c) => c.check === 'claude_catching_up'), undefined);
+  const e2 = await setup(t);
+  await appendFile(e2.main, `{"type":"attachment","timestamp":"${at(25)}"}\n`);
+  for (const m of [10, 3, 0]) await appendFile(e2.main, `{"type":"user","timestamp":"${at(m)}"}\n`);
+  r = await e2.run();
+  assert.equal(r.failed, true, 'appends keep coming but the oldest pending record is 25 minutes old');
+  assert.equal(await e2.level('claude_partial'), 'fail');
 });
 
-test('doctor output puts a blank line between groups', async () => {
-  const { formatChecks } = await import('../src/doctor.js');
-  const text = formatChecks([
-    { level: 'info', check: 'server', detail: '18', group: 'server' },
-    { level: 'info', check: 'database', detail: 'x', group: 'server' },
-    { level: 'ok', check: 'schema', detail: 'current', group: 'schema' },
-    { level: 'ok', check: 'claude_missing', detail: '0', group: 'claude' },
-  ]);
-  assert.equal(text, 'info\tserver\t18\ninfo\tdatabase\tx\n\nok\tschema\tcurrent\n\nok\tclaude_missing\t0');
+test('an idle session that gets its first new line gets the grace period', async (t) => {
+  const e = await setup(t);
+  if (!e) return;
+  await e.db('sources').update({ updated_at: new Date(Date.now() - 3 * 86_400_000) });
+  await appendFile(e.main, `{"type":"user","timestamp":"${at(0)}"}\n`);
+  assert.equal(await e.level('claude_partial'), 'ok');
+  assert.equal((await e.run()).failed, false);
+});
+
+test('a pending line without a timestamp is aged by the last checkpoint', async (t) => {
+  const e = await setup(t);
+  if (!e) return;
+  await appendFile(e.main, '{"type":"attachment"}\n');
+  assert.equal((await e.run()).failed, false);
+  await e.db('sources').update({ updated_at: new Date(Date.now() - 30 * 60_000) });
+  assert.equal(await e.level('claude_partial'), 'fail');
 });

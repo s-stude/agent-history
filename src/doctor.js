@@ -8,6 +8,7 @@ import { historyHome } from './paths.js';
 
 export const PROVISIONAL_MAX_AGE_MIN = 10;
 export const BACKUP_MAX_AGE_DAYS = 8;
+export const CATCH_UP_GRACE_MIN = 20;
 
 async function hasCompleteLineAfter(file, offset) {
   const fh = await open(file, 'r');
@@ -25,11 +26,12 @@ async function hasCompleteLineAfter(file, offset) {
   }
 }
 
-async function sourceProblems(db, inv) {
+async function sourceProblems(db, inv, now = new Date()) {
   const rows = new Map(
     (await db('sources').select('path', 'status', 'byte_offset', 'inode', 'size', 'prefix_fingerprint', 'parser_version')).map((r) => [r.path, r]),
   );
-  const out = { missing: [], partial: [], stale: [] };
+  const out = { missing: [], partial: [], stale: [], catching_up: [] };
+  const graceStart = now.getTime() - CATCH_UP_GRACE_MIN * 60_000;
   for (const s of inv.sources) {
     const row = rows.get(s.path);
     if (!row) {
@@ -54,7 +56,8 @@ async function sourceProblems(db, inv) {
     ) {
       out.stale.push(s);
     } else if (info.size > Number(row.byte_offset) && (await hasCompleteLineAfter(s.path, Number(row.byte_offset)))) {
-      out.partial.push(s);
+      if (info.mtimeMs >= graceStart) out.catching_up.push(s);
+      else out.partial.push(s);
     }
   }
   return out;
@@ -145,11 +148,15 @@ export async function doctor(db, { roots = rootsFromEnv(), env = process.env, no
   if (schema.state !== 'current') return finish(checks);
 
   const inv = await buildInventory(roots);
-  const problems = await sourceProblems(db, inv);
+  const problems = await sourceProblems(db, inv, now);
   for (const tool of ['claude', 'codex']) {
     for (const kind of ['missing', 'partial', 'stale']) {
       const list = problems[kind].filter((s) => s.tool === tool);
       add(list.length ? 'fail' : 'ok', `${tool}_${kind}`, list.length ? `${list.length}: ${list.slice(0, 3).map((s) => path.basename(s.path)).join(', ')}` : 0);
+    }
+    const recent = problems.catching_up.filter((s) => s.tool === tool);
+    if (recent.length) {
+      add('warn', `${tool}_catching_up`, `${recent.length} written in the last ${CATCH_UP_GRACE_MIN} min, not yet fully ingested: ${recent.slice(0, 3).map((s) => path.basename(s.path)).join(', ')}`);
     }
   }
   add(inv.unsupported.length ? 'fail' : 'ok', 'unsupported', inv.unsupported.length);

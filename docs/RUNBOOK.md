@@ -78,7 +78,7 @@ npm run psql -- -c 'ANALYZE'
 npm run doctor
 ```
 
-- Expect, from the trial on a throwaway database (Nov 16): about 3–4 minutes, ~860 MB database, 0 errors. `doctor` should show no `fail` lines, except `*_partial` for sessions that are still open and growing (like the one you ran the scan from); `npm run scan:changed` clears them, and after step 4 the hooks keep them current.
+- Expect, from the trial on a throwaway database (Nov 16): about 3–4 minutes, ~860 MB database, 0 errors. `doctor` should show no `fail` lines. Sessions written to in the last 20 minutes that are not fully ingested yet show as `warn *_catching_up` (open sessions, a trailing record written after the Stop hook, or a final turn whose async hook was cancelled when the session exited); the 15-minute scan catches them up. Only a source still behind after 20 minutes is `fail *_partial`.
 - Re-running is safe: finished sources are skipped. `npm run scan:changed` is the fast catch-up.
 - Undo: drop and recreate the database (step 2).
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -41,6 +41,8 @@ test('missing, partial and unsupported sources fail', async (t) => {
   if (!e) return;
   await write(path.join(e.roots.claudeProjects, '-w-demo', '43cec861-2203-414b-bfc7-b732d4b88001.jsonl'), '{"type":"mode"}\n');
   await appendFile(e.main, '{"type":"mode"}\n');
+  const old = new Date(Date.now() - 3_600_000);
+  await utimes(e.main, old, old);
   await write(path.join(e.roots.codexSessions, 'weird.jsonl'), '{}\n');
   const r = await e.run();
   assert.equal(r.failed, true);
@@ -127,4 +129,20 @@ test('role audit: a role that can truncate, own or create is not read-only', asy
   const { rows } = await e.db.raw('SELECT current_user AS u');
   assert.equal(await roleStatus(e.db, rows[0].u), 'can-write');
   assert.equal(await roleStatus(e.db, 'agent_history_role_that_does_not_exist'), 'missing');
+});
+
+test('a recently written session behind its checkpoint is a warning; after the grace period it fails', async (t) => {
+  const e = await setup(t);
+  if (!e) return;
+  await appendFile(e.main, '{"type":"attachment"}\n');
+  let r = await e.run();
+  assert.equal(r.failed, false);
+  assert.equal(r.checks.find((c) => c.check === 'claude_catching_up').level, 'warn');
+  assert.equal(await e.level('claude_partial'), 'ok');
+  const old = new Date(Date.now() - 21 * 60_000);
+  await utimes(e.main, old, old);
+  r = await e.run();
+  assert.equal(r.failed, true);
+  assert.equal(await e.level('claude_partial'), 'fail');
+  assert.equal(r.checks.find((c) => c.check === 'claude_catching_up'), undefined);
 });

@@ -132,7 +132,7 @@ npm run skill:install                       # shows the symlink it would create
 npm run skill:install -- --apply
 ```
 
-- To link every skill in `skills/` at once, use `skills/link-all-cc.sh` (into `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/<dir>`) and `skills/link-all-codex.sh` (into `~/.agents/skills/<dir>`). They log each link, are safe to rerun, and never replace an existing folder or a link that points elsewhere.
+- To make every skill in `skills/` available to agents working in this project, run `skills/link-all-cc.sh` (links into `./.claude/skills/<dir>`) and `skills/link-all-codex.sh` (links into `./.agents/skills/<dir>`). Links are relative (`../../skills/<dir>`), each is logged, reruns are safe, and an existing folder or a link pointing elsewhere is never replaced. Commit the links if clones should get them too.
 - Run it in a fresh session: "run a retrospective of <project> for the last 30 days".
 - Check by hand that every decision and reversal is backed by the quoted text in the cited session, and that later reversals supersede earlier decisions.
 - Undo: `npm run skill:uninstall -- --apply` (removes the link only if it points to this repository's skill).

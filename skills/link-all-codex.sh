@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Links every skill folder in this directory into the Codex skills folder:
-#   $HOME/.agents/skills/<dir> -> <this dir>/<dir>
+# Links every skill folder in this directory into this project's Codex skills folder:
+#   <project>/.agents/skills/<dir> -> ../../skills/<dir>   (relative, so the links survive moving or cloning the repo)
+# <project> is the folder that contains this skills/ directory.
 # Safe to rerun: correct links are left alone; anything else with the same name is reported and never replaced.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="$HOME/.agents/skills"
+PROJECT="$(dirname "$SRC")"
+DEST="$PROJECT/.agents/skills"
 
 mkdir -p "$DEST"
 echo "Linking skills for Codex: $SRC/* -> $DEST/"
@@ -12,7 +14,7 @@ linked=0; kept=0; skipped=0
 for dir in "$SRC"/*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
-  target="$SRC/$name"
+  target="../../$(basename "$SRC")/$name"
   link="$DEST/$name"
   if [ -L "$link" ]; then
     current="$(readlink "$link")"

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Links every skill folder in this directory into Claude Code's skills folder:
-#   ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/<dir> -> <this dir>/<dir>
+# Links every skill folder in this directory into this project's Claude Code skills folder:
+#   <project>/.claude/skills/<dir> -> ../../skills/<dir>   (relative, so the links survive moving or cloning the repo)
+# <project> is the folder that contains this skills/ directory.
 # Safe to rerun: correct links are left alone; anything else with the same name is reported and never replaced.
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DEST="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+PROJECT="$(dirname "$SRC")"
+DEST="$PROJECT/.claude/skills"
 
 mkdir -p "$DEST"
 echo "Linking skills for Claude Code: $SRC/* -> $DEST/"
@@ -12,7 +14,7 @@ linked=0; kept=0; skipped=0
 for dir in "$SRC"/*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
-  target="$SRC/$name"
+  target="../../$(basename "$SRC")/$name"
   link="$DEST/$name"
   if [ -L "$link" ]; then
     current="$(readlink "$link")"
